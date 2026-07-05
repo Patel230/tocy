@@ -12,20 +12,23 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/lakshmanpatel/tocy/internal/pricing"
 	"github.com/lakshmanpatel/tocy/internal/store"
 )
 
 // Line is one output row (all models within a group key collapsed).
 type Line struct {
-	Key        string  `json:"key"`
-	Input      int64   `json:"input"`
-	Output     int64   `json:"output"`
-	CacheRead  int64   `json:"cache_read"`
-	CacheWrite int64   `json:"cache_write"`
-	Reasoning  int64   `json:"reasoning"`
-	Total      int64   `json:"total"`
-	Events     int64   `json:"events"`
-	RawCost    float64 `json:"raw_cost,omitempty"`
+	Key            string  `json:"key"`
+	Input          int64   `json:"input"`
+	Output         int64   `json:"output"`
+	CacheRead      int64   `json:"cache_read"`
+	CacheWrite     int64   `json:"cache_write"`
+	Reasoning      int64   `json:"reasoning"`
+	Total          int64   `json:"total"`
+	Events         int64   `json:"events"`
+	RawCost        float64 `json:"raw_cost,omitempty"`
+	Cost           float64 `json:"cost"`
+	UnpricedEvents int64   `json:"unpriced_events,omitempty"`
 }
 
 type Options struct {
@@ -66,13 +69,17 @@ func ParseSince(s string, now time.Time) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("bad --since %q (want all|today|7d|24h|2w|1m|YYYY-MM-DD)", s)
 }
 
-// Build aggregates the store into collapsed, sorted lines.
-func Build(st *store.Store, o Options) ([]Line, error) {
+// Build aggregates the store into collapsed, sorted lines. Cost is computed
+// per (key, model) bucket: LiteLLM pricing when the model matches, else the
+// tool's own logged cost, else the bucket is counted as unpriced (never a
+// silent $0). The second return lists distinct unpriced model names.
+func Build(st *store.Store, o Options, prices *pricing.Table) ([]Line, []string, error) {
 	rows, err := st.Aggregate(store.AggOpts{Since: o.Since, GroupBy: o.GroupBy, Source: o.Source})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	byKey := map[string]*Line{}
+	unpriced := map[string]bool{}
 	var order []string
 	for _, r := range rows {
 		l, ok := byKey[r.Key]
@@ -88,6 +95,22 @@ func Build(st *store.Store, o Options) ([]Line, error) {
 		l.Reasoning += r.Reasoning
 		l.Events += r.Events
 		l.RawCost += r.RawCost
+
+		var priced bool
+		if prices != nil {
+			if usd, ok := prices.Cost(r.Model, r.Input, r.Output, r.CacheRead, r.CacheWrite); ok {
+				l.Cost += usd
+				priced = true
+			}
+		}
+		if !priced && r.HasRawCost {
+			l.Cost += r.RawCost
+			priced = true
+		}
+		if !priced {
+			l.UnpricedEvents += r.Events
+			unpriced[r.Model] = true
+		}
 	}
 	out := make([]Line, 0, len(order))
 	for _, k := range order {
@@ -100,11 +123,17 @@ func Build(st *store.Store, o Options) ([]Line, error) {
 	} else {
 		sort.Slice(out, func(i, j int) bool { return out[i].Total > out[j].Total }) // biggest first
 	}
-	return out, nil
+	var up []string
+	for m := range unpriced {
+		up = append(up, m)
+	}
+	sort.Strings(up)
+	return out, up, nil
 }
 
-// Render writes lines as a table (or JSON) to w.
-func Render(w io.Writer, lines []Line, o Options) error {
+// Render writes lines as a table (or JSON) to w. unpriced lists model names
+// that could not be priced (footnoted under the table).
+func Render(w io.Writer, lines []Line, o Options, unpriced []string) error {
 	if o.JSON {
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
@@ -116,16 +145,17 @@ func Render(w io.Writer, lines []Line, o Options) error {
 	}
 	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 	head := strings.ToUpper(orDefault(o.GroupBy, "tool"))
-	fmt.Fprintf(tw, "%s\tINPUT\tOUTPUT\tCACHE R\tCACHE W\tREASON\tTOTAL\tEVENTS\n", head)
+	fmt.Fprintf(tw, "%s\tINPUT\tOUTPUT\tCACHE R\tCACHE W\tREASON\tTOTAL\tEVENTS\tCOST\n", head)
 	var tot Line
 	for _, l := range lines {
 		key := l.Key
 		if o.GroupBy == "project" {
 			key = shortProject(key)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\n", key,
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n", key,
 			Humanize(l.Input), Humanize(l.Output), Humanize(l.CacheRead),
-			Humanize(l.CacheWrite), Humanize(l.Reasoning), Humanize(l.Total), l.Events)
+			Humanize(l.CacheWrite), Humanize(l.Reasoning), Humanize(l.Total), l.Events,
+			costCell(l))
 		tot.Input += l.Input
 		tot.Output += l.Output
 		tot.CacheRead += l.CacheRead
@@ -133,11 +163,47 @@ func Render(w io.Writer, lines []Line, o Options) error {
 		tot.Reasoning += l.Reasoning
 		tot.Total += l.Total
 		tot.Events += l.Events
+		tot.Cost += l.Cost
+		tot.UnpricedEvents += l.UnpricedEvents
 	}
-	fmt.Fprintf(tw, "TOTAL\t%s\t%s\t%s\t%s\t%s\t%s\t%d\n",
+	fmt.Fprintf(tw, "TOTAL\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
 		Humanize(tot.Input), Humanize(tot.Output), Humanize(tot.CacheRead),
-		Humanize(tot.CacheWrite), Humanize(tot.Reasoning), Humanize(tot.Total), tot.Events)
-	return tw.Flush()
+		Humanize(tot.CacheWrite), Humanize(tot.Reasoning), Humanize(tot.Total), tot.Events,
+		costCell(tot))
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	if len(unpriced) > 0 {
+		fmt.Fprintf(w, "* no pricing for: %s\n", strings.Join(unpriced, ", "))
+	}
+	return nil
+}
+
+// costCell renders a line's cost; "—" when nothing was priced, "*" suffix
+// when the line mixes priced and unpriced events.
+func costCell(l Line) string {
+	if l.Cost == 0 && l.UnpricedEvents > 0 {
+		return "—*"
+	}
+	s := Money(l.Cost)
+	if l.UnpricedEvents > 0 {
+		s += "*"
+	}
+	return s
+}
+
+// Money renders a USD amount at sensible precision.
+func Money(v float64) string {
+	switch {
+	case v >= 100:
+		return fmt.Sprintf("$%.0f", v)
+	case v >= 1:
+		return fmt.Sprintf("$%.2f", v)
+	case v > 0:
+		return fmt.Sprintf("$%.3f", v)
+	default:
+		return "$0"
+	}
 }
 
 func orDefault(s, d string) string {

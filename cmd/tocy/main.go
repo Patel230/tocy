@@ -8,20 +8,23 @@ import (
 	"time"
 
 	"github.com/lakshmanpatel/tocy/internal/ingest"
+	"github.com/lakshmanpatel/tocy/internal/pricing"
 	"github.com/lakshmanpatel/tocy/internal/report"
 	"github.com/lakshmanpatel/tocy/internal/store"
+	"github.com/lakshmanpatel/tocy/internal/tui"
 )
 
 const usageText = `tocy — token usage & cost across your AI CLIs
 
 Usage:
-  tocy                 interactive dashboard (coming in P2; runs scan+report for now)
+  tocy                 interactive dashboard (scans, then live TUI)
   tocy scan            ingest new usage from all detected tools
   tocy report          print usage table
       --since <all|today|7d|24h|2w|1m|YYYY-MM-DD>   (default all)
       --by <tool|model|day|project>                 (default tool)
       --json
   tocy tools           list detected tools and their ingest status
+  tocy pricing refresh force-refresh the LiteLLM pricing cache
   tocy help            this help
 `
 
@@ -42,6 +45,8 @@ func main() {
 		err = cmdReport(args)
 	case "tools":
 		err = cmdTools()
+	case "pricing":
+		err = cmdPricing(args)
 	case "help", "-h", "--help":
 		fmt.Print(usageText)
 	default:
@@ -98,11 +103,24 @@ func cmdReport(args []string) error {
 	}
 	defer st.Close()
 	o := report.Options{Since: sinceT, GroupBy: *by, Source: *tool, JSON: *jsonOut}
-	lines, err := report.Build(st, o)
+	lines, unpriced, err := report.Build(st, o, pricing.Load(false))
 	if err != nil {
 		return err
 	}
-	return report.Render(os.Stdout, lines, o)
+	return report.Render(os.Stdout, lines, o, unpriced)
+}
+
+func cmdPricing(args []string) error {
+	if len(args) == 0 || args[0] != "refresh" {
+		return fmt.Errorf("usage: tocy pricing refresh")
+	}
+	t := pricing.Load(true)
+	fmt.Printf("pricing: %d models loaded (source: %s, cache: %s)\n",
+		t.Count, t.Source, pricing.CachePath())
+	if t.Source != "network" {
+		fmt.Println("note: network refresh failed; using best local data")
+	}
+	return nil
 }
 
 func cmdTools() error {
@@ -130,12 +148,13 @@ func cmdTools() error {
 	return nil
 }
 
-// cmdDashboard is the default command. Until the TUI lands (P2) it scans
-// then prints a 7-day report.
+// cmdDashboard is the default command: the live TUI (scans on startup and
+// every 30s in the background).
 func cmdDashboard() error {
-	if err := cmdScan(); err != nil {
+	st, err := openStore()
+	if err != nil {
 		return err
 	}
-	fmt.Println()
-	return cmdReport([]string{"--since", "7d", "--by", "tool"})
+	defer st.Close()
+	return tui.Run(st, pricing.Load(false))
 }

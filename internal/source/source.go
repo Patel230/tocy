@@ -12,18 +12,18 @@ import (
 
 // UsageEvent is one normalized token-usage record from any tool.
 type UsageEvent struct {
-	Source    string     // tool name, e.g. "claude-code"
-	DedupKey  string     // unique within Source; UNIQUE(source, dedup_key) in DB
-	Model     string     // e.g. "claude-opus-4-7"
-	SessionID string
-	Project   string     // cwd / project path if known
-	TS        time.Time  // UTC
-	Input     int64
-	Output    int64
-	CacheRead int64
+	Source     string // tool name, e.g. "claude-code"
+	DedupKey   string // unique within Source; UNIQUE(source, dedup_key) in DB
+	Model      string // e.g. "claude-opus-4-7"
+	SessionID  string
+	Project    string    // cwd / project path if known
+	TS         time.Time // UTC
+	Input      int64
+	Output     int64
+	CacheRead  int64
 	CacheWrite int64
-	Reasoning int64
-	RawCost   *float64 // source-provided cost (opencode); nil elsewhere
+	Reasoning  int64
+	RawCost    *float64 // source-provided cost (opencode); nil elsewhere
 }
 
 // Total returns the total token count across all classes.
@@ -37,8 +37,8 @@ type FileState struct {
 	Source string
 	Inode  uint64
 	Size   int64
-	Mtime  int64 // unix seconds
-	Offset int64 // byte offset already parsed
+	Mtime  int64  // unix seconds
+	Offset int64  // byte offset already parsed
 	State  string // parser-specific JSON (e.g. codex cumulative totals)
 }
 
