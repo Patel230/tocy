@@ -14,6 +14,9 @@ import (
 	"github.com/lakshmanpatel/tocy/internal/tui"
 )
 
+// version is set via -ldflags "-X main.version=..." by goreleaser.
+var version = "dev"
+
 const usageText = `tocy — token usage & cost across your AI CLIs
 
 Usage:
@@ -26,7 +29,10 @@ Usage:
   tocy tools           list detected tools and their ingest status
   tocy watch           keep ingesting in the foreground
       --interval <dur>                              (default 30s)
+      --install          install a launchd agent (macOS) to watch at login
+      --uninstall        remove that launchd agent
   tocy pricing refresh force-refresh the LiteLLM pricing cache
+  tocy version         print the tocy version
   tocy help            this help
 `
 
@@ -53,6 +59,8 @@ func main() {
 		err = cmdPricing(args)
 	case "help", "-h", "--help":
 		fmt.Print(usageText)
+	case "version", "-v", "--version":
+		fmt.Println("tocy", version)
 	default:
 		fmt.Fprintf(os.Stderr, "tocy: unknown command %q\n\n%s", cmd, usageText)
 		os.Exit(2)
@@ -95,8 +103,16 @@ func cmdScan() error {
 func cmdWatch(args []string) error {
 	fs := flag.NewFlagSet("watch", flag.ExitOnError)
 	interval := fs.Duration("interval", 30*time.Second, "rescan interval")
+	install := fs.Bool("install", false, "install a launchd agent that runs `tocy watch` at login")
+	uninstall := fs.Bool("uninstall", false, "remove the launchd agent installed by --install")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *uninstall {
+		return uninstallLaunchAgent()
+	}
+	if *install {
+		return installLaunchAgent(interval.String())
 	}
 	if *interval < time.Second {
 		return fmt.Errorf("--interval must be at least 1s")
