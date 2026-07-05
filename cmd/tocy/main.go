@@ -24,6 +24,8 @@ Usage:
       --by <tool|model|day|project>                 (default tool)
       --json
   tocy tools           list detected tools and their ingest status
+  tocy watch           keep ingesting in the foreground
+      --interval <dur>                              (default 30s)
   tocy pricing refresh force-refresh the LiteLLM pricing cache
   tocy help            this help
 `
@@ -45,6 +47,8 @@ func main() {
 		err = cmdReport(args)
 	case "tools":
 		err = cmdTools()
+	case "watch":
+		err = cmdWatch(args)
 	case "pricing":
 		err = cmdPricing(args)
 	case "help", "-h", "--help":
@@ -82,6 +86,51 @@ func cmdScan() error {
 		}
 	}
 	return nil
+}
+
+// cmdWatch keeps ingesting in the foreground: a poll loop over ScanAll.
+// Incremental scans are cheap — unchanged files are skipped by stat, and the
+// opencode db is re-queried only from its saved cursor. Polling (vs fsnotify)
+// also catches WAL SQLite writes and editor-style atomic renames for free.
+func cmdWatch(args []string) error {
+	fs := flag.NewFlagSet("watch", flag.ExitOnError)
+	interval := fs.Duration("interval", 30*time.Second, "rescan interval")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *interval < time.Second {
+		return fmt.Errorf("--interval must be at least 1s")
+	}
+	st, err := openStore()
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	srcs := ingest.Sources()
+	detected := 0
+	for _, s := range srcs {
+		if ok, _ := s.Detect(); ok {
+			detected++
+		}
+	}
+	fmt.Printf("tocy watch: %d/%d tools detected, rescanning every %s (Ctrl-C to stop)\n",
+		detected, len(srcs), *interval)
+
+	for {
+		for _, r := range ingest.ScanAll(st, srcs) {
+			switch {
+			case r.Err != nil:
+				fmt.Printf("%s  %-12s ERROR: %v\n",
+					time.Now().Format("15:04:05"), r.Source, r.Err)
+			case r.NewEvents > 0:
+				fmt.Printf("%s  %-12s +%d event(s) from %d file(s) in %s\n",
+					time.Now().Format("15:04:05"), r.Source, r.NewEvents, r.Files,
+					r.Duration.Round(time.Millisecond))
+			}
+		}
+		time.Sleep(*interval)
+	}
 }
 
 func cmdReport(args []string) error {

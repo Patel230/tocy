@@ -8,6 +8,8 @@ import (
 
 	"github.com/lakshmanpatel/tocy/internal/source"
 	"github.com/lakshmanpatel/tocy/internal/source/claudecode"
+	"github.com/lakshmanpatel/tocy/internal/source/codex"
+	"github.com/lakshmanpatel/tocy/internal/source/opencode"
 	"github.com/lakshmanpatel/tocy/internal/store"
 )
 
@@ -15,7 +17,19 @@ import (
 func Sources() []source.Source {
 	return []source.Source{
 		claudecode.New(),
+		codex.New(),
+		opencode.New(),
 	}
+}
+
+// alwaysScanner is an optional Source capability: return true to bypass the
+// size/mtime "unchanged" skip (needed for WAL SQLite dbs, whose main file
+// stat often doesn't change until a checkpoint).
+type alwaysScanner interface{ AlwaysScan() bool }
+
+func alwaysScan(src source.Source) bool {
+	a, ok := src.(alwaysScanner)
+	return ok && a.AlwaysScan()
 }
 
 // Result summarizes one source's scan.
@@ -64,7 +78,7 @@ func scanSource(st *store.Store, src source.Source) (files, newEvents int, err e
 		}
 		if prev == nil {
 			prev = &source.FileState{Path: path, Source: src.Name()}
-		} else if prev.Size == size && prev.Mtime == mtime && prev.Inode == ino {
+		} else if prev.Size == size && prev.Mtime == mtime && prev.Inode == ino && !alwaysScan(src) {
 			continue // unchanged
 		}
 		// Truncated/rotated: restart from 0 (dedup keys prevent double count).
