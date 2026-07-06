@@ -32,36 +32,28 @@ func TestHBar(t *testing.T) {
 	}
 }
 
-func TestColumns(t *testing.T) {
-	rows := columns([]int64{0, 5, 10}, 2)
-	if len(rows) != 2 {
-		t.Fatalf("got %d rows, want 2", len(rows))
+func TestTrendChart(t *testing.T) {
+	// Empty input = placeholder line.
+	out := trendChart(nil, 80)
+	if len(out) < 1 {
+		t.Fatal("empty chart returned no lines")
 	}
-	for i, r := range rows {
-		if n := len([]rune(r)); n != 3 {
-			t.Errorf("row %d width = %d, want 3", i, n)
+	// All-zero input = single "no activity" line.
+	out = trendChart([]int64{0, 0, 0}, 80)
+	if len(out) < 1 {
+		t.Fatal("zero chart returned no lines")
+	}
+	// Normal data returns chart rows + axis + label line.
+	out = trendChart([]int64{1, 5, 10, 7, 3}, 80)
+	if len(out) < 7 {
+		t.Errorf("got %d lines, want >= 7 chart rows + axis + label", len(out))
+	}
+	// Single spike renders at least one non-empty row.
+	out = trendChart([]int64{1000}, 80)
+	for i, line := range out {
+		if len(line) == 0 {
+			t.Errorf("line %d is empty", i)
 		}
-	}
-	// Max value fills the full column: top row's last rune is '█'.
-	top := []rune(rows[0])
-	if top[2] != '█' {
-		t.Errorf("max column top rune = %q, want █", top[2])
-	}
-	// Zero value renders blank in every row.
-	bot := []rune(rows[1])
-	if top[0] != ' ' || bot[0] != ' ' {
-		t.Error("zero column should be blank")
-	}
-	// Tiny-but-nonzero values must remain visible in the bottom row.
-	rows = columns([]int64{1, 1000000}, 4)
-	last := []rune(rows[3])
-	if last[0] == ' ' {
-		t.Error("nonzero value rendered as empty column")
-	}
-	// All-zero input: no divide-by-zero, blank chart.
-	rows = columns([]int64{0, 0}, 2)
-	if rows[0] != "  " {
-		t.Errorf("all-zero top row = %q", rows[0])
 	}
 }
 
@@ -78,8 +70,8 @@ func TestBarListAndCostCell(t *testing.T) {
 	if !strings.Contains(out[0], "$4.31") {
 		t.Errorf("priced row missing cost: %q", out[0])
 	}
-	if !strings.Contains(out[1], "—*") {
-		t.Errorf("unpriced row missing —*: %q", out[1])
+	if !strings.Contains(out[1], "-*") {
+		t.Errorf("unpriced row missing -*: %q", out[1])
 	}
 	if !strings.Contains(out[2], "$1.50*") {
 		t.Errorf("partially priced row missing *: %q", out[2])
@@ -89,17 +81,11 @@ func TestBarListAndCostCell(t *testing.T) {
 	}
 }
 
-func TestTruncateAndShortProj(t *testing.T) {
+func TestTruncate(t *testing.T) {
 	if got := truncate("abcdef", 4); got != "abc…" {
 		t.Errorf("truncate = %q", got)
 	}
 	if got := truncate("ab", 4); got != "ab" {
 		t.Errorf("truncate short = %q", got)
-	}
-	if got := shortProj("/Users/x/Desktop/ProjectAlpha/tocy"); got != "…/ProjectAlpha/tocy" {
-		t.Errorf("shortProj = %q", got)
-	}
-	if got := shortProj(""); got != "(unknown)" {
-		t.Errorf("shortProj empty = %q", got)
 	}
 }

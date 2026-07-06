@@ -1,6 +1,3 @@
-// Package pricing maps model names to per-token costs using the LiteLLM
-// community pricing dataset. Resolution order: fresh local cache (<24h) →
-// network fetch → stale cache → embedded snapshot. Load never fails.
 package pricing
 
 import (
@@ -19,12 +16,10 @@ import (
 var snapshot []byte
 
 const (
-	// URL is the canonical LiteLLM pricing dataset.
 	URL      = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 	cacheTTL = 24 * time.Hour
 )
 
-// ModelPrice holds per-token USD costs for one model.
 type ModelPrice struct {
 	InputCostPerToken           float64 `json:"input_cost_per_token"`
 	OutputCostPerToken          float64 `json:"output_cost_per_token"`
@@ -32,19 +27,16 @@ type ModelPrice struct {
 	CacheCreationInputTokenCost float64 `json:"cache_creation_input_token_cost"`
 }
 
-// Table is a loaded pricing table with memoized fuzzy matching.
 type Table struct {
 	prices map[string]ModelPrice
-	norm   map[string]string // normalized key -> canonical key
-	memo   map[string]string // raw model name -> canonical key ("" = miss)
+	norm   map[string]string
+	memo   map[string]string
 
-	Source    string // "cache" | "network" | "stale-cache" | "embedded"
+	Source    string
 	FetchedAt time.Time
 	Count     int
 }
 
-// CachePath returns where the pricing cache lives: alongside TOCY_DB if set,
-// otherwise ~/.tocy/pricing.json.
 func CachePath() string {
 	if db := os.Getenv("TOCY_DB"); db != "" {
 		return filepath.Join(filepath.Dir(db), "pricing.json")
@@ -56,8 +48,6 @@ func CachePath() string {
 	return filepath.Join(home, ".tocy", "pricing.json")
 }
 
-// Load returns a usable pricing table, never an error. force skips the
-// cache-freshness shortcut and always attempts a network refresh.
 func Load(force bool) *Table {
 	path := CachePath()
 
@@ -78,7 +68,6 @@ func Load(force bool) *Table {
 		}
 	}
 
-	// Network failed: any cache, even stale, beats the embedded snapshot.
 	if t := fromFile(path, 0); t != nil {
 		t.Source = "stale-cache"
 		return t
@@ -86,15 +75,16 @@ func Load(force bool) *Table {
 
 	t := parse(snapshot)
 	if t == nil {
-		// Corrupt embed is a build bug; return an empty (all-miss) table
-		// rather than panicking in a TUI.
-		t = &Table{prices: map[string]ModelPrice{}, norm: map[string]string{}, memo: map[string]string{}}
+		t = &Table{
+			prices: map[string]ModelPrice{},
+			norm:   map[string]string{},
+			memo:   map[string]string{},
+		}
 	}
 	t.Source = "embedded"
 	return t
 }
 
-// fromFile parses path if it exists and (when ttl > 0) is younger than ttl.
 func fromFile(path string, ttl time.Duration) *Table {
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -143,7 +133,7 @@ func parse(body []byte) *Table {
 	}
 	for k, v := range raw {
 		if k == "sample_spec" {
-			continue // documentation entry in the LiteLLM file
+			continue
 		}
 		var p ModelPrice
 		if err := json.Unmarshal(v, &p); err != nil {
@@ -151,12 +141,10 @@ func parse(body []byte) *Table {
 		}
 		if p.InputCostPerToken == 0 && p.OutputCostPerToken == 0 &&
 			p.CacheReadInputTokenCost == 0 && p.CacheCreationInputTokenCost == 0 {
-			continue // free/embedding/unpriced entries can't help us
+			continue
 		}
 		t.prices[k] = p
 		n := normalize(k)
-		// Prefer the shortest canonical key per normalized form (bare
-		// "claude-sonnet-5" over "anthropic/claude-sonnet-5").
 		if prev, ok := t.norm[n]; !ok || len(k) < len(prev) {
 			t.norm[n] = k
 		}
@@ -167,9 +155,6 @@ func parse(body []byte) *Table {
 
 var dateSuffix = regexp.MustCompile(`[-@]20\d{6}$`)
 
-// normalize collapses naming variants: lowercase, "." → "-" in version
-// numbers is NOT done globally (gpt-5.5 is canonical), but date stamps,
-// "-latest" and "-free" suffixes are stripped.
 func normalize(name string) string {
 	n := strings.ToLower(strings.TrimSpace(name))
 	n = dateSuffix.ReplaceAllString(n, "")
@@ -179,31 +164,22 @@ func normalize(name string) string {
 	return n
 }
 
-// candidates yields lookup keys derived from a raw model name, most
-// specific first.
 func candidates(model string) []string {
 	m := strings.TrimSpace(model)
 	out := []string{m, strings.ToLower(m)}
-	// Provider-qualified names: try progressively shorter tails.
-	// "anthropic/pioneer/deepseek-ai/DeepSeek-V4-Pro" →
-	// "pioneer/deepseek-ai/DeepSeek-V4-Pro", "deepseek-ai/DeepSeek-V4-Pro", "DeepSeek-V4-Pro"
 	parts := strings.Split(m, "/")
 	for i := 1; i < len(parts); i++ {
 		out = append(out, strings.Join(parts[i:], "/"))
 	}
-	// Bare name: try common provider prefixes as LiteLLM sometimes only
-	// has the qualified form.
 	if !strings.Contains(m, "/") {
 		for _, p := range []string{"anthropic/", "openai/", "gemini/", "vertex_ai/", "openrouter/"} {
 			out = append(out, p+m)
 		}
 	}
-	// "." vs "-" version separators: claude-opus-4.7 ↔ claude-opus-4-7.
 	if strings.Contains(m, ".") {
 		out = append(out, strings.ReplaceAll(m, ".", "-"))
 	}
 	if strings.Contains(m, "-") {
-		// only swap the LAST "-" between digits to avoid mangling names
 		if alt := dotAlt(m); alt != "" {
 			out = append(out, alt)
 		}
@@ -220,8 +196,6 @@ func dotAlt(m string) string {
 	return ""
 }
 
-// Match resolves a raw model name to a price. Results (hits and misses)
-// are memoized.
 func (t *Table) Match(model string) (ModelPrice, bool) {
 	if model == "" {
 		return ModelPrice{}, false
@@ -254,8 +228,6 @@ func (t *Table) resolve(model string) string {
 	return ""
 }
 
-// Cost prices a token bundle. ok=false means the model is unknown and the
-// caller must surface it as unpriced — never as $0.
 func (t *Table) Cost(model string, input, output, cacheRead, cacheWrite int64) (usd float64, ok bool) {
 	p, ok := t.Match(model)
 	if !ok {

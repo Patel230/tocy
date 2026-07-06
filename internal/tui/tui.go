@@ -1,5 +1,3 @@
-// Package tui is the live tocy dashboard: 4 tabs (Overview, By Model,
-// Daily, Projects), background rescans every 30s, pricing-aware bars.
 package tui
 
 import (
@@ -20,9 +18,10 @@ import (
 const (
 	rescanEvery = 30 * time.Second
 	trendDays   = 30
+	streakWeeks = 17
 )
 
-var tabNames = []string{"Overview", "By Model", "Daily", "Projects"}
+var tabNames = []string{"Overview", "By Model", "Daily", "Projects", "Streak"}
 
 var ranges = []struct {
 	name  string
@@ -44,55 +43,66 @@ type cardData struct {
 }
 
 type viewData struct {
-	cards     [4]cardData // today / 7d / 30d / all
-	byTool    []report.Line
-	byModel   []report.Line
-	byDay     []report.Line
-	byProject []report.Line
-	trend     []int64 // tokens per day, oldest → newest, exactly trendDays long
-	unpriced  []string
-	tools     []string
-	loadedAt  time.Time
+	cards        [4]cardData
+	byTool       []report.Line
+	byModel      []report.Line
+	byDay        []report.Line
+	byProject    []report.Line
+	insights     string
+	trend        []int64
+	streakData   []int64
+	streakStart  time.Time
+	unpriced     []string
+	tools        []string
+	loadingCost  float64
+	pricingLabel string
+	loadedAt     time.Time
+	err          error
 }
 
 type (
 	tickMsg time.Time
+	spinMsg int
 	scanMsg struct{ note string }
 	dataMsg struct{ vd *viewData }
-	errMsg  struct{ err error }
 )
 
-// Model is the bubbletea model.
 type Model struct {
 	st     *store.Store
 	prices *pricing.Table
 
 	width, height int
 	tab           int
-	rangeIdx      int // index into ranges; default 7d
-	toolIdx       int // 0 = all, else tools[toolIdx-1]
+	rangeIdx      int
+	toolIdx       int
 	sortByCost    bool
 	scroll        int
+	showHelp      bool
 
-	scanning bool
-	scanNote string
-	err      error
-	data     *viewData
+	scanning  bool
+	spinFrame int
+	scanNote  string
+	lastErr   string
+	data      *viewData
 }
 
-// Run starts the dashboard and blocks until quit.
 func Run(st *store.Store, prices *pricing.Table) error {
 	m := Model{st: st, prices: prices, rangeIdx: 1, scanning: true}
-	_, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
+	p := tea.NewProgram(m, tea.WithAltScreen())
+	_, err := p.Run()
 	return err
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.scanCmd(), tickCmd())
+	return tea.Batch(m.scanCmd(), tickCmd(), spinCmd())
 }
 
 func tickCmd() tea.Cmd {
 	return tea.Tick(rescanEvery, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
+
+func spinCmd() tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg { return spinMsg(0) })
 }
 
 func (m Model) tool() string {
@@ -129,7 +139,7 @@ func (m Model) loadCmd() tea.Cmd {
 	return func() tea.Msg {
 		vd, err := load(st, prices, since, tool)
 		if err != nil {
-			return errMsg{err}
+			vd = &viewData{err: err}
 		}
 		return dataMsg{vd}
 	}
@@ -137,7 +147,7 @@ func (m Model) loadCmd() tea.Cmd {
 
 func load(st *store.Store, prices *pricing.Table, since time.Time, tool string) (*viewData, error) {
 	now := time.Now()
-	vd := &viewData{loadedAt: now}
+	vd := &viewData{loadedAt: now, pricingLabel: pricingSourceLabel(prices)}
 	build := func(by string, s time.Time) ([]report.Line, []string, error) {
 		return report.Build(st, report.Options{Since: s, GroupBy: by, Source: tool}, prices)
 	}
@@ -155,7 +165,6 @@ func load(st *store.Store, prices *pricing.Table, since time.Time, tool string) 
 		return nil, err
 	}
 
-	// 30-day trend is independent of the selected range.
 	tl, _, err := build("day", now.AddDate(0, 0, -(trendDays-1)))
 	if err != nil {
 		return nil, err
@@ -170,7 +179,26 @@ func load(st *store.Store, prices *pricing.Table, since time.Time, tool string) 
 		vd.trend[i] = byDate[d]
 	}
 
-	// Summary cards: fixed ranges, respecting the tool filter.
+	earliest, _ := st.EarliestEvent()
+	if earliest.IsZero() || earliest.After(now) {
+		earliest = now.AddDate(0, 0, -(streakWeeks*7 - 1))
+	}
+	vd.streakStart = earliest
+	streakDays := int(now.Sub(earliest).Hours()/24) + 1
+	sl, _, err := build("day", earliest)
+	if err != nil {
+		return nil, err
+	}
+	sd := map[string]int64{}
+	for _, l := range sl {
+		sd[l.Key] = l.Total
+	}
+	vd.streakData = make([]int64, streakDays)
+	for i := 0; i < streakDays; i++ {
+		d := earliest.AddDate(0, 0, i).Format("2006-01-02")
+		vd.streakData[i] = sd[d]
+	}
+
 	for i, rg := range ranges {
 		lines, _, err := build("tool", rg.since(now))
 		if err != nil {
@@ -184,6 +212,7 @@ func load(st *store.Store, prices *pricing.Table, since time.Time, tool string) 
 		}
 		vd.cards[i] = c
 	}
+	vd.loadingCost = vd.cards[1].cost
 
 	stats, err := st.SourceStats()
 	if err != nil {
@@ -196,6 +225,13 @@ func load(st *store.Store, prices *pricing.Table, since time.Time, tool string) 
 	return vd, nil
 }
 
+func pricingSourceLabel(p *pricing.Table) string {
+	if p == nil {
+		return "no pricing"
+	}
+	return p.Source
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -203,6 +239,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c", "esc":
+			if m.showHelp {
+				m.showHelp = false
+				return m, nil
+			}
 			return m, tea.Quit
 		case "tab", "right", "l":
 			m.tab = (m.tab + 1) % len(tabNames)
@@ -210,9 +250,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "shift+tab", "left", "h":
 			m.tab = (m.tab + len(tabNames) - 1) % len(tabNames)
 			m.scroll = 0
-		case "1", "2", "3", "4":
+		case "1", "2", "3", "4", "5":
 			m.tab = int(msg.String()[0] - '1')
 			m.scroll = 0
+		case "?":
+			m.showHelp = !m.showHelp
 		case "t":
 			m.rangeIdx = (m.rangeIdx + 1) % len(ranges)
 			m.scroll = 0
@@ -230,7 +272,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			if !m.scanning {
 				m.scanning = true
-				return m, m.scanCmd()
+				return m, tea.Batch(m.scanCmd(), spinCmd())
 			}
 		case "up", "k":
 			if m.scroll > 0 {
@@ -241,11 +283,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "g":
 			m.scroll = 0
 		}
+	case spinMsg:
+		m.spinFrame++
+		if m.scanning || m.data == nil {
+			return m, spinCmd()
+		}
+		return m, nil
 	case tickMsg:
 		cmds := []tea.Cmd{tickCmd()}
 		if !m.scanning {
 			m.scanning = true
-			cmds = append(cmds, m.scanCmd())
+			cmds = append(cmds, m.scanCmd(), spinCmd())
 		}
 		return m, tea.Batch(cmds...)
 	case scanMsg:
@@ -253,78 +301,136 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scanNote = msg.note
 		return m, m.loadCmd()
 	case dataMsg:
+		if msg.vd.err != nil {
+			m.lastErr = msg.vd.err.Error()
+			return m, nil
+		}
 		m.data = msg.vd
-		m.err = nil
-	case errMsg:
-		m.err = msg.err
+		m.lastErr = ""
+		if m.data != nil {
+			m.data.insights = buildInsights(m.data)
+		}
 	}
 	return m, nil
 }
 
+func buildInsights(vd *viewData) string {
+	if len(vd.byTool) == 0 {
+		return ""
+	}
+	parts := []string{}
+
+	var topTool string
+	var topTotal int64
+	for _, l := range vd.byTool {
+		if l.Total > topTotal {
+			topTotal = l.Total
+			topTool = l.Key
+		}
+	}
+	if topTotal > 0 {
+		parts = append(parts, fmt.Sprintf("top %s (%s)", topTool, report.Humanize(topTotal)))
+	}
+	if len(vd.byTool) > 1 && topTotal > 0 {
+		totalAll := int64(0)
+		for _, l := range vd.byTool {
+			totalAll += l.Total
+		}
+		parts = append(parts, fmt.Sprintf("%.0f%% from %s", float64(topTotal)/float64(totalAll)*100, topTool))
+	}
+	var totCost float64
+	for _, c := range vd.cards {
+		totCost += c.cost
+	}
+	if totCost > 0 {
+		parts = append(parts, fmt.Sprintf("cost %s", report.Money(totCost)))
+	}
+	if len(vd.unpriced) > 0 {
+		parts = append(parts, fmt.Sprintf("%d unpriced model(s)", len(vd.unpriced)))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " " + strings.Join(parts, "  ·  ")
+}
+
 func (m Model) View() string {
+	if m.showHelp {
+		return m.helpView()
+	}
 	if m.width == 0 {
-		return "starting…"
+		return "starting..."
 	}
 	w := m.width
 
-	// Header.
 	filter := "all tools"
 	if t := m.tool(); t != "" {
 		filter = t
 	}
+
+	pricingLabel := ""
+	if m.data != nil {
+		pricingLabel = m.data.pricingLabel
+	}
+	left := titleSty.Render(" tocy ") +
+		dimSty.Render(" ◆ ") +
+		dimSty.Render("range:") + " " + ranges[m.rangeIdx].name + " " +
+		dimSty.Render("tool:") + " " + filter
+
+	if pricingLabel != "" {
+		left += " " + dimSty.Render("pricing:") + " " + infoSty.Render(pricingLabel)
+	}
+
 	status := ""
 	switch {
 	case m.scanning:
-		status = warnSty.Render("⟳ scanning…")
+		status = infoSty.Render(spinnerFrame(m.spinFrame) + " scanning...")
 	case m.data != nil:
-		status = dimSty.Render(m.scanNote + " · " + m.data.loadedAt.Format("15:04:05"))
+		status = dimSty.Render(m.scanNote + "  " + m.data.loadedAt.Format("15:04:05"))
 	}
-	left := titleSty.Render(" tocy ") +
-		dimSty.Render("· range:") + " " + ranges[m.rangeIdx].name + " " +
-		dimSty.Render("· tool:") + " " + filter
-	pad := w - lipgloss.Width(left) - lipgloss.Width(status) - 1
-	if pad < 1 {
-		pad = 1
+	if m.lastErr != "" {
+		status = warnSty.Render("! " + m.lastErr)
+	}
+	pad := w - lipgloss.Width(left) - lipgloss.Width(status) - 3
+	if pad < 0 {
+		pad = 0
 	}
 	header := left + strings.Repeat(" ", pad) + status
 
-	// Tab bar.
 	var tabs []string
 	for i, n := range tabNames {
 		lbl := fmt.Sprintf("%d %s", i+1, n)
 		if i == m.tab {
-			tabs = append(tabs, tabOnSty.Render(lbl))
+			tabs = append(tabs, tabOnSty.Foreground(palette[i%len(palette)]).Render(lbl))
 		} else {
 			tabs = append(tabs, tabOffSty.Render(lbl))
 		}
 	}
 	tabBar := lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
+	tabLineSty := lipgloss.NewStyle().Foreground(palette[m.tab%len(palette)])
+	tabLine := tabLineSty.Render(strings.Repeat("─", max(10, w-lipgloss.Width(tabBar)-2)))
 
-	// Footer.
-	help := dimSty.Render(" 1-4/tab views · t range · f tool · s sort · r rescan · j/k scroll · q quit")
-	if m.data != nil && len(m.data.unpriced) > 0 {
-		help += "\n" + warnSty.Render(" * no pricing for: "+truncate(strings.Join(m.data.unpriced, ", "), w-22))
-	}
-
-	chrome := 2 + lipgloss.Height(tabBar) + lipgloss.Height(help)
+	chrome := 2 + lipgloss.Height(tabBar) + 2
 	avail := m.height - chrome
 	if avail < 3 {
 		avail = 3
 	}
 
-	// Body.
 	var lines []string
 	switch {
-	case m.err != nil:
-		lines = []string{warnSty.Render("error: " + m.err.Error())}
+	case m.lastErr != "":
+		lines = []string{warnSty.Render("error: " + m.lastErr)}
+		if m.data != nil && m.data.insights != "" {
+			lines = append(lines, "", secSty.Render(m.data.insights))
+		}
 	case m.data == nil:
-		lines = []string{dimSty.Render("loading…")}
+		lines = []string{"  " + infoSty.Render(spinnerFrame(m.spinFrame)+" loading data...")}
 	default:
 		lines = m.body(w - 2)
 	}
 	scroll := m.scroll
-	if max := len(lines) - avail; scroll > max {
-		scroll = max
+	if mx := len(lines) - avail; scroll > mx {
+		scroll = mx
 	}
 	if scroll < 0 {
 		scroll = 0
@@ -336,13 +442,82 @@ func (m Model) View() string {
 	shown := lines[scroll:end]
 	body := " " + strings.Join(shown, "\n ")
 	if end < len(lines) {
-		body += "\n " + dimSty.Render(fmt.Sprintf("… %d more (j to scroll)", len(lines)-end))
+		body += "\n " + dimSty.Render(fmt.Sprintf("... %d more (j/↓ to scroll)", len(lines)-end))
 	}
 
-	return header + "\n" + tabBar + "\n" + body + "\n" + help
+	footer := " " + strings.Join([]string{
+		keySty.Render("1-5") + dimSty.Render("/tab"),
+		keySty.Render("t") + dimSty.Render("/range"),
+		keySty.Render("f") + dimSty.Render("/tool"),
+		keySty.Render("s") + dimSty.Render("/sort"),
+		keySty.Render("r") + dimSty.Render("/rescan"),
+		keySty.Render("?") + dimSty.Render("/help"),
+		keySty.Render("q") + dimSty.Render("/quit"),
+	}, dimSty.Render("  "))
+	if m.data != nil && len(m.data.unpriced) > 0 {
+		footer += "\n" + warnSty.Render(" * no pricing: "+truncate(strings.Join(m.data.unpriced, ", "), w-22))
+	}
+
+	return header + "\n" + tabBar + " " + tabLine + "\n" + body + "\n" + footer
 }
 
-// body renders the active tab's content as raw lines (pre-scroll).
+func (m Model) helpView() string {
+	w := m.width
+	if w == 0 {
+		w = 80
+	}
+	h := m.height
+	if h == 0 {
+		h = 24
+	}
+
+	helpText := `tocy — token usage & cost dashboard
+
+KEYBINDINGS
+ 1-5          Switch tabs (Overview / Model / Daily / Projects / Streak)
+ tab / →      Next tab
+ ⇧tab / ←     Previous tab
+ t            Cycle time range (today → 7d → 30d → all)
+ f            Filter by tool
+ s            Toggle sort by cost / tokens
+ r            Force rescan
+ j / ↓        Scroll down
+ k / ↑        Scroll up
+ g            Jump to top
+ ?            Toggle this help
+ q / esc      Quit
+
+TABS
+ Overview     Summary cards, tool breakdown, 30-day trend
+ By Model     Usage grouped by AI model
+ Daily        Day-by-day usage history
+ Projects     Usage grouped by project directory
+ Streak       GitHub-style contribution heatmap
+
+INSIGHTS
+ Smart suggestions appear in the Overview tab based on
+ your usage patterns — top tools, cost analysis, and
+ unpriced model warnings.
+
+A dollar (*) suffix means some events in that row have no
+pricing data and were not counted toward the cost column.
+A dash (-) means the entire row is unpriced.
+`
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(palette[0]).
+		Padding(1, 2).
+		Width(min(w-4, 60)).
+		Render(helpText)
+
+	lines := strings.Split(box, "\n")
+	if len(lines) > h-2 {
+		lines = lines[:h-2]
+	}
+	return strings.Join(lines, "\n") + "\n" + dimSty.Render(" press ? or esc to close ")
+}
+
 func (m Model) body(w int) []string {
 	d := m.data
 	switch m.tab {
@@ -353,12 +528,19 @@ func (m Model) body(w int) []string {
 	case 2:
 		rev := make([]report.Line, len(d.byDay))
 		for i, l := range d.byDay {
-			rev[len(d.byDay)-1-i] = l // newest first
+			rev[len(d.byDay)-1-i] = l
 		}
 		return m.list(rev, w, func(l report.Line) string { return l.Key }, false)
+	case 3:
+		return m.list(d.byProject, w, func(l report.Line) string { return report.ShortProj(l.Key) }, true)
 	default:
-		return m.list(d.byProject, w, func(l report.Line) string { return shortProj(l.Key) }, true)
+		return m.streak(w)
 	}
+}
+
+func (m Model) streak(w int) []string {
+	d := m.data
+	return heatmap(d.streakData, d.streakStart, w)
 }
 
 func (m Model) list(src []report.Line, w int, label func(report.Line) string, sortable bool) []string {
@@ -380,46 +562,41 @@ func (m Model) list(src []report.Line, w int, label func(report.Line) string, so
 func (m Model) overview(w int) []string {
 	d := m.data
 	cardTitles := []string{"Today", "7 days", "30 days", "All time"}
+
+	cardW := min((w-8)/4, 22)
+	if cardW < 14 {
+		cardW = 14
+	}
+
 	var cards []string
 	for i, t := range cardTitles {
-		cards = append(cards, card(t, d.cards[i].total, d.cards[i].cost, d.cards[i].unpriced))
+		pi := i
+		switch i {
+		case 0:
+			pi = 7
+		case 1:
+			pi = 6
+		case 2:
+			pi = 9
+		}
+		cards = append(cards, cardAt(t, d.cards[i].total, d.cards[i].cost, d.cards[i].unpriced, pi, cardW))
 	}
 	row := lipgloss.JoinHorizontal(lipgloss.Top, cards...)
 	out := strings.Split(row, "\n")
 
-	out = append(out, "", secSty.Render("BY TOOL — "+ranges[m.rangeIdx].name))
+	if d.insights != "" {
+		out = append(out, "", secSty.Render("insights")+infoSty.Render(d.insights))
+	}
+
+	sep := strings.Repeat("─", min(w, 60))
+	out = append(out, "", dimSty.Render(sep))
+	out = append(out, secSty.Render("BY TOOL  ")+dimSty.Render(ranges[m.rangeIdx].name))
 	out = append(out, barList(d.byTool, w, func(l report.Line) string { return l.Key })...)
 
-	var max int64
-	for _, v := range d.trend {
-		if v > max {
-			max = v
-		}
-	}
-	out = append(out, "", secSty.Render("LAST 30 DAYS")+dimSty.Render(
-		fmt.Sprintf("  (peak %s tok/day)", report.Humanize(max))))
-	// Double each column for readability when it fits.
-	vals := d.trend
-	cols := columns(vals, 4)
-	for _, r := range cols {
-		if w >= trendDays*2+4 {
-			var b strings.Builder
-			for _, ch := range r {
-				b.WriteRune(ch)
-				b.WriteRune(ch)
-			}
-			r = b.String()
-		}
-		out = append(out, barSty.Render(r))
-	}
-	span := trendDays * 2
-	if w < trendDays*2+4 {
-		span = trendDays
-	}
-	lbl := "30d ago"
-	gap := span - len(lbl) - len("today")
-	if gap > 0 {
-		out = append(out, dimSty.Render(lbl+strings.Repeat(" ", gap)+"today"))
-	}
+	out = append(out, "", dimSty.Render(sep))
+	out = append(out, secSty.Render("30-DAY TREND"))
+	chart := trendChart(d.trend, w-2)
+	out = append(out, chart...)
+
 	return out
 }

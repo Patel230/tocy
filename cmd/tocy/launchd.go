@@ -44,8 +44,6 @@ const plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `
 
-// installLaunchAgent writes and loads a per-user launchd job that runs
-// `tocy watch` in the background at login. macOS only.
 func installLaunchAgent(interval string) error {
 	if runtime.GOOS != "darwin" {
 		return fmt.Errorf("launchd install is only supported on macOS")
@@ -94,7 +92,6 @@ func installLaunchAgent(interval string) error {
 		return err
 	}
 
-	// bootout first in case a stale job is already loaded, then bootstrap.
 	uid := fmt.Sprintf("gui/%d", os.Getuid())
 	_ = exec.Command("launchctl", "bootout", uid, path).Run()
 	out, err := exec.Command("launchctl", "bootstrap", uid, path).CombinedOutput()

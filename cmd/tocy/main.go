@@ -1,4 +1,3 @@
-// tocy — track token usage & cost across every AI CLI on this machine.
 package main
 
 import (
@@ -14,26 +13,47 @@ import (
 	"github.com/lakshmanpatel/tocy/internal/tui"
 )
 
-// version is set via -ldflags "-X main.version=..." by goreleaser.
 var version = "dev"
 
-const usageText = `tocy — token usage & cost across your AI CLIs
+// Aliased from internal/report so the whole CLI shares one set of ANSI codes.
+const (
+	ansiReset  = report.Reset
+	ansiBold   = report.Bold
+	ansiDim    = report.Dim
+	ansiRed    = report.Red
+	ansiGreen  = report.Green
+	ansiYellow = report.Yellow
+	ansiBlue   = report.Blue
+	ansiPurple = report.Purple
+	ansiCyan   = report.Cyan
+)
+
+func color(c, s string) string { return report.C(c, s) }
+
+const usage = `tocy — token usage & cost across your AI CLIs
 
 Usage:
-  tocy                 interactive dashboard (scans, then live TUI)
-  tocy scan            ingest new usage from all detected tools
-  tocy report          print usage table
-      --since <all|today|7d|24h|2w|1m|YYYY-MM-DD>   (default all)
-      --by <tool|model|day|project>                 (default tool)
-      --json
-  tocy tools           list detected tools and their ingest status
-  tocy watch           keep ingesting in the foreground
-      --interval <dur>                              (default 30s)
-      --install          install a launchd agent (macOS) to watch at login
-      --uninstall        remove that launchd agent
-  tocy pricing refresh force-refresh the LiteLLM pricing cache
-  tocy version         print the tocy version
-  tocy help            this help
+  tocy                           interactive dashboard
+  tocy scan                      ingest new usage
+      --verbose                  show per-file scan details
+  tocy report                    print usage table
+      --since                    all|today|7d|24h|2w|1m|YYYY-MM-DD (default all)
+      --by                       tool|model|day|project|session (default tool)
+      --json                     machine-readable output
+      --tool <name>              filter to one tool
+  tocy sessions                  list recent sessions with cost
+      --since                    time window (default today)
+      --json                     machine-readable output
+  tocy tools                     list detected tools and ingest status
+  tocy statusline                compact one-line cost summary for today
+  tocy watch                     keep ingesting (poll loop)
+      --interval <dur>           rescan interval (default 30s)
+      --install                  install launchd agent (macOS)
+      --uninstall                remove launchd agent
+  tocy prune --keep <days>       delete events older than N days
+  tocy pricing refresh           force-refresh pricing cache
+  tocy version                   print version
+  tocy help [cmd]                this help, or help for a specific command
 `
 
 func main() {
@@ -48,25 +68,31 @@ func main() {
 	case "dashboard":
 		err = cmdDashboard()
 	case "scan":
-		err = cmdScan()
+		err = cmdScan(args)
 	case "report":
 		err = cmdReport(args)
+	case "sessions":
+		err = cmdSessions(args)
 	case "tools":
 		err = cmdTools()
+	case "statusline":
+		err = cmdStatusline()
 	case "watch":
 		err = cmdWatch(args)
+	case "prune":
+		err = cmdPrune(args)
 	case "pricing":
 		err = cmdPricing(args)
 	case "help", "-h", "--help":
-		fmt.Print(usageText)
+		err = cmdHelp(args)
 	case "version", "-v", "--version":
-		fmt.Println("tocy", version)
+		fmt.Println(color(ansiBold+ansiPurple, "tocy"), version)
 	default:
-		fmt.Fprintf(os.Stderr, "tocy: unknown command %q\n\n%s", cmd, usageText)
+		fmt.Fprintf(os.Stderr, "%s unknown command %q\n\n%s", color(ansiRed, "tocy:"), cmd, usage)
 		os.Exit(2)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "tocy:", err)
+		fmt.Fprintln(os.Stderr, color(ansiRed, "tocy:"), err)
 		os.Exit(1)
 	}
 }
@@ -75,36 +101,55 @@ func openStore() (*store.Store, error) {
 	return store.Open(store.DefaultPath())
 }
 
-func cmdScan() error {
+func cmdScan(args []string) error {
+	fs := flag.NewFlagSet("scan", flag.ExitOnError)
+	verbose := fs.Bool("verbose", false, "show per-file scan details")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 	st, err := openStore()
 	if err != nil {
 		return err
 	}
 	defer st.Close()
 	results := ingest.ScanAll(st, ingest.Sources())
+	had := false
 	for _, r := range results {
+		had = true
 		switch {
 		case r.Err != nil:
-			fmt.Printf("  %-12s ERROR: %v\n", r.Source, r.Err)
+			fmt.Printf("  %s %s\n", color(ansiRed, "✖"), color(ansiBold+ansiRed, r.Source)+"  "+color(ansiRed, r.Err.Error()))
 		case !r.Found:
-			fmt.Printf("  %-12s not detected\n", r.Source)
+			fmt.Printf("  %s %s\n", color(ansiYellow, "•"), color(ansiBold, r.Source)+"  "+color(ansiDim, "not detected"))
 		default:
-			fmt.Printf("  %-12s %d file(s) parsed, %d new event(s) in %s\n",
-				r.Source, r.Files, r.NewEvents, r.Duration.Round(time.Millisecond))
+			ev := fmt.Sprintf("+%d event(s)", r.NewEvents)
+			fi := fmt.Sprintf("%d file(s)", r.Files)
+			du := r.Duration.Round(time.Millisecond).String()
+			stat := fmt.Sprintf("%s  %s %s", color(ansiGreen, ev), color(ansiDim, fi), color(ansiDim, du))
+			fmt.Printf("  %s %s  %s\n", color(ansiGreen, "✓"), color(ansiBold, r.Source), stat)
+		}
+	}
+	if !had {
+		fmt.Println("  " + color(ansiDim, "no sources scanned"))
+	}
+	if *verbose {
+		for _, r := range results {
+			if r.Err != nil || !r.Found {
+				continue
+			}
+			if r.Files > 0 {
+				fmt.Printf("  %s %s\n", color(ansiDim, "  └─"), color(ansiDim, fmt.Sprintf("%d file(s) scanned", r.Files)))
+			}
 		}
 	}
 	return nil
 }
 
-// cmdWatch keeps ingesting in the foreground: a poll loop over ScanAll.
-// Incremental scans are cheap — unchanged files are skipped by stat, and the
-// opencode db is re-queried only from its saved cursor. Polling (vs fsnotify)
-// also catches WAL SQLite writes and editor-style atomic renames for free.
 func cmdWatch(args []string) error {
 	fs := flag.NewFlagSet("watch", flag.ExitOnError)
 	interval := fs.Duration("interval", 30*time.Second, "rescan interval")
-	install := fs.Bool("install", false, "install a launchd agent that runs `tocy watch` at login")
-	uninstall := fs.Bool("uninstall", false, "remove the launchd agent installed by --install")
+	install := fs.Bool("install", false, "install a launchd agent")
+	uninstall := fs.Bool("uninstall", false, "remove the launchd agent")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -130,23 +175,149 @@ func cmdWatch(args []string) error {
 			detected++
 		}
 	}
-	fmt.Printf("tocy watch: %d/%d tools detected, rescanning every %s (Ctrl-C to stop)\n",
-		detected, len(srcs), *interval)
+	fmt.Printf("  %s  %s\n",
+		color(ansiCyan, "⟳"),
+		color(ansiDim, fmt.Sprintf("watching %d/%d tools, polling every %s", detected, len(srcs), *interval)))
 
 	for {
 		for _, r := range ingest.ScanAll(st, srcs) {
+			ts := time.Now().Format("15:04:05")
 			switch {
 			case r.Err != nil:
-				fmt.Printf("%s  %-12s ERROR: %v\n",
-					time.Now().Format("15:04:05"), r.Source, r.Err)
+				fmt.Printf("%s %s %s\n", color(ansiDim, ts), color(ansiBold+ansiRed, r.Source), color(ansiRed, r.Err.Error()))
 			case r.NewEvents > 0:
-				fmt.Printf("%s  %-12s +%d event(s) from %d file(s) in %s\n",
-					time.Now().Format("15:04:05"), r.Source, r.NewEvents, r.Files,
-					r.Duration.Round(time.Millisecond))
+				msg := fmt.Sprintf("+%d event(s) from %d file(s) in %s", r.NewEvents, r.Files, r.Duration.Round(time.Millisecond))
+				fmt.Printf("%s %s %s\n", color(ansiDim, ts), color(ansiBold+ansiGreen, r.Source), color(ansiDim, msg))
 			}
 		}
 		time.Sleep(*interval)
 	}
+}
+
+func todayStart() time.Time {
+	now := time.Now()
+	y, m, d := now.Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, now.Location())
+}
+
+func cmdSessions(args []string) error {
+	fs := flag.NewFlagSet("sessions", flag.ExitOnError)
+	since := fs.String("since", "today", "time window")
+	jsonOut := fs.Bool("json", false, "JSON output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	sinceT, err := report.ParseSince(*since, time.Now())
+	if err != nil {
+		return err
+	}
+	st, err := openStore()
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	sessions, unpriced, err := report.BuildSessions(st, report.Options{Since: sinceT}, pricing.Load(false))
+	if err != nil {
+		return err
+	}
+	return report.RenderSessions(os.Stdout, sessions, report.Options{JSON: *jsonOut}, unpriced)
+}
+
+func cmdStatusline() error {
+	st, err := openStore()
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	line, err := report.Statusline(st, pricing.Load(false))
+	if err != nil {
+		return err
+	}
+	fmt.Println(line)
+	return nil
+}
+
+func cmdPrune(args []string) error {
+	fs := flag.NewFlagSet("prune", flag.ExitOnError)
+	keep := fs.Int("keep", 90, "keep events newer than N days")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *keep < 1 {
+		return fmt.Errorf("--keep must be >= 1")
+	}
+	before := time.Now().AddDate(0, 0, -*keep)
+	st, err := openStore()
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	n, err := st.Prune(before)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("  %s %s %s\n", color(ansiGreen, "✓"), color(ansiBold, fmt.Sprintf("%d event(s) pruned", n)),
+		color(ansiDim, fmt.Sprintf("(kept %s → today)", before.Format("2006-01-02"))))
+	if n > 0 {
+		if _, err := st.DB.Exec("VACUUM"); err != nil {
+			return fmt.Errorf("prune succeeded but vacuum failed: %w", err)
+		}
+	}
+	return nil
+}
+
+func cmdHelp(args []string) error {
+	if len(args) == 0 {
+		fmt.Print(usage)
+		return nil
+	}
+	switch args[0] {
+	case "scan":
+		fmt.Println(color(ansiBold+ansiPurple, "tocy scan") + " — " + color(ansiDim, "ingest new usage"))
+		fmt.Println()
+		fmt.Println("  " + color(ansiBold, "tocy scan"))
+		fmt.Println("      " + color(ansiDim, "--verbose    show per-file scan details"))
+	case "report":
+		fmt.Println(color(ansiBold+ansiPurple, "tocy report") + " — " + color(ansiDim, "print usage table"))
+		fmt.Println()
+		fmt.Println("  " + color(ansiBold, "tocy report") + " " + color(ansiDim, "[flags]"))
+		fmt.Println("      " + color(ansiDim, "--since all|today|7d|24h|2w|1m|YYYY-MM-DD  (default all)"))
+		fmt.Println("      " + color(ansiDim, "--by tool|model|day|project|session      (default tool)"))
+		fmt.Println("      " + color(ansiDim, "--json                                   machine-readable output"))
+		fmt.Println("      " + color(ansiDim, "--tool <name>                            filter to one tool"))
+	case "sessions":
+		fmt.Println(color(ansiBold+ansiPurple, "tocy sessions") + " — " + color(ansiDim, "list recent sessions with cost"))
+		fmt.Println()
+		fmt.Println("  " + color(ansiBold, "tocy sessions") + " " + color(ansiDim, "[flags]"))
+		fmt.Println("      " + color(ansiDim, "--since all|today|7d|24h|2w|1m|YYYY-MM-DD  (default today)"))
+		fmt.Println("      " + color(ansiDim, "--json                                   machine-readable output"))
+	case "tools":
+		fmt.Println(color(ansiBold+ansiPurple, "tocy tools") + " — " + color(ansiDim, "list detected tools and ingest status"))
+	case "statusline":
+		fmt.Println(color(ansiBold+ansiPurple, "tocy statusline") + " — " + color(ansiDim, "compact one-line cost summary for today"))
+		fmt.Println()
+		fmt.Println("  " + color(ansiBold, "tocy statusline"))
+		fmt.Println("      " + color(ansiDim, "outputs: $4.25*  ·  3 tools  ·  12.4K tok  ·  31 events"))
+	case "watch":
+		fmt.Println(color(ansiBold+ansiPurple, "tocy watch") + " — " + color(ansiDim, "keep ingesting (poll loop)"))
+		fmt.Println()
+		fmt.Println("  " + color(ansiBold, "tocy watch") + " " + color(ansiDim, "[flags]"))
+		fmt.Println("      " + color(ansiDim, "--interval <dur>    rescan interval (default 30s)"))
+		fmt.Println("      " + color(ansiDim, "--install           install launchd agent (macOS)"))
+		fmt.Println("      " + color(ansiDim, "--uninstall         remove launchd agent"))
+	case "prune":
+		fmt.Println(color(ansiBold+ansiPurple, "tocy prune") + " — " + color(ansiDim, "delete old events"))
+		fmt.Println()
+		fmt.Println("  " + color(ansiBold, "tocy prune --keep <days>"))
+		fmt.Println("      " + color(ansiDim, "--keep <days>  keep events newer than N days (required)"))
+	case "pricing":
+		fmt.Println(color(ansiBold+ansiPurple, "tocy pricing refresh") + " — " + color(ansiDim, "force-refresh pricing cache"))
+	case "version":
+		fmt.Println(color(ansiBold+ansiPurple, "tocy version") + " — " + color(ansiDim, "print version"))
+	default:
+		return fmt.Errorf("unknown help topic %q", args[0])
+	}
+	return nil
 }
 
 func cmdReport(args []string) error {
@@ -180,10 +351,15 @@ func cmdPricing(args []string) error {
 		return fmt.Errorf("usage: tocy pricing refresh")
 	}
 	t := pricing.Load(true)
-	fmt.Printf("pricing: %d models loaded (source: %s, cache: %s)\n",
-		t.Count, t.Source, pricing.CachePath())
-	if t.Source != "network" {
-		fmt.Println("note: network refresh failed; using best local data")
+	models := color(ansiBold, fmt.Sprintf("%d models", t.Count))
+	src := fmt.Sprintf("source: %s", t.Source)
+	cache := fmt.Sprintf("cache: %s", pricing.CachePath())
+	fmt.Printf("  %s  %s  %s  %s\n", color(ansiGreen, "✓"), color(ansiBold, models), color(ansiDim, src), color(ansiDim, cache))
+	switch t.Source {
+	case "stale-cache":
+		fmt.Println("  " + color(ansiYellow, "⚠ network refresh failed; using stale cached data"))
+	case "embedded":
+		fmt.Println("  " + color(ansiYellow, "⚠ network refresh failed and no cache found; using built-in snapshot"))
 	}
 	return nil
 }
@@ -200,21 +376,21 @@ func cmdTools() error {
 	}
 	for _, src := range ingest.Sources() {
 		found, root := src.Detect()
-		status := "not detected"
+		nm := color(ansiBold, src.Name())
 		if found {
-			status = "detected at " + root
+			fmt.Printf("  %s  %s  %s\n", color(ansiGreen, "✓"), nm, color(ansiDim, root))
+		} else {
+			fmt.Printf("  %s  %s  %s\n", color(ansiYellow, "•"), nm, color(ansiDim, "not detected"))
 		}
-		fmt.Printf("  %-12s %s\n", src.Name(), status)
 		if s, ok := stats[src.Name()]; ok {
-			fmt.Printf("  %-12s %d events ingested, %s → %s\n", "",
-				s.Events, s.FirstTS.Format("2006-01-02"), s.LastTS.Format("2006-01-02 15:04"))
+			ev := fmt.Sprintf("%d events", s.Events)
+			rg := fmt.Sprintf("%s → %s", s.FirstTS.Format("2006-01-02"), s.LastTS.Format("2006-01-02 15:04"))
+			fmt.Printf("  %s  %s  %s\n", color(ansiDim, "└─"), color(ansiCyan, ev), color(ansiDim, rg))
 		}
 	}
 	return nil
 }
 
-// cmdDashboard is the default command: the live TUI (scans on startup and
-// every 30s in the background).
 func cmdDashboard() error {
 	st, err := openStore()
 	if err != nil {

@@ -1,18 +1,3 @@
-// Package opencode parses the opencode SQLite store:
-// ~/.local/share/opencode/opencode.db (message table, data JSON column).
-//
-// Unlike the JSONL sources this is not byte-offset tailable, so the
-// incremental cursor is the max message.time_created (epoch ms) already
-// processed, persisted as JSON in FileState.State. FileState.Offset stays 0
-// on purpose: ingest's truncation heuristic (size < offset) would otherwise
-// fire on every scan and wipe the state. The cursor query uses >= and relies
-// on the store's UNIQUE(source, dedup_key) to drop re-read boundary rows.
-//
-// Streaming caveat: an assistant row is INSERTed at turn start and its data
-// (tokens/cost) UPDATEd as the reply streams. We only ingest rows whose
-// time.completed is set, and pin the cursor at the oldest still-incomplete
-// row so it is re-read once finished; rows incomplete for >24h are treated
-// as abandoned (crashed session) and skipped so they cannot pin forever.
 package opencode
 
 import (
@@ -28,12 +13,10 @@ import (
 )
 
 const name = "opencode"
-
 const abandonAfter = 24 * time.Hour
 
 type Src struct{ dbPath string }
 
-// New returns the source at $XDG_DATA_HOME/opencode/opencode.db.
 func New() *Src {
 	dataHome := os.Getenv("XDG_DATA_HOME")
 	if dataHome == "" {
@@ -43,7 +26,6 @@ func New() *Src {
 	return &Src{dbPath: filepath.Join(dataHome, "opencode", "opencode.db")}
 }
 
-// NewWithDB is used by tests and fixtures.
 func NewWithDB(path string) *Src { return &Src{dbPath: path} }
 
 func (s *Src) Name() string { return name }
@@ -60,31 +42,19 @@ func (s *Src) ScanTargets() ([]string, error) {
 	return []string{s.dbPath}, nil
 }
 
-// WatchDirs: poll-only. In WAL mode new rows land in opencode.db-wal, so
-// fsnotify on the main file would miss them anyway.
 func (s *Src) WatchDirs() []string { return nil }
 
-// AlwaysScan tells ingest to skip the size/mtime unchanged check: with WAL
-// the main db file's stat often doesn't budge until a checkpoint.
 func (s *Src) AlwaysScan() bool { return true }
 
 type cursorState struct {
-	CursorMS int64 `json:"cursor_ms"`
-	// Pinned records that CursorMS points at a still-streaming row, so the
-	// next scan must query even if file stats look unchanged (the UPDATE
-	// that completes it may land between our stat and a checkpoint).
-	Pinned bool `json:"pinned,omitempty"`
-	// Stats of the db and its -wal at last scan: if all are unchanged and
-	// nothing is pinned, there is nothing new and we skip the full-scan
-	// cursor query (the message table has no bare time_created index, so
-	// every query walks all rows — too heavy for a watch tick).
+	CursorMS   int64 `json:"cursor_ms"`
+	Pinned     bool  `json:"pinned,omitempty"`
 	DBSize     int64 `json:"db_size,omitempty"`
 	DBMtimeNS  int64 `json:"db_mtime_ns,omitempty"`
 	WalSize    int64 `json:"wal_size,omitempty"`
 	WalMtimeNS int64 `json:"wal_mtime_ns,omitempty"`
 }
 
-// statOf returns (size, mtime ns) or zeros if the file is absent.
 func statOf(path string) (int64, int64) {
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -93,7 +63,6 @@ func statOf(path string) (int64, int64) {
 	return fi.Size(), fi.ModTime().UnixNano()
 }
 
-// msgData is the subset of the message.data JSON we need.
 type msgData struct {
 	Role   string  `json:"role"`
 	Cost   float64 `json:"cost"`
@@ -119,21 +88,19 @@ type msgData struct {
 
 func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEvent)) (source.FileState, error) {
 	ns := *st
-	ns.Offset = 0 // see package comment
+	ns.Offset = 0
 
 	var cur cursorState
 	if st.State != "" {
 		_ = json.Unmarshal([]byte(st.State), &cur)
 	}
 
-	// Stats are taken BEFORE the query: a write racing the query bumps
-	// mtime past these values, forcing a (deduped) rescan next tick.
 	dbSize, dbMt := statOf(path)
 	walSize, walMt := statOf(path + "-wal")
 	if st.State != "" && !cur.Pinned &&
 		cur.DBSize == dbSize && cur.DBMtimeNS == dbMt &&
 		cur.WalSize == walSize && cur.WalMtimeNS == walMt {
-		return ns, nil // nothing changed on disk since last scan
+		return ns, nil
 	}
 
 	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(2000)")
@@ -152,7 +119,7 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 
 	var (
 		maxSeen  = cur.CursorMS
-		pinned   int64 // oldest incomplete assistant row; 0 = none
+		pinned   int64
 		staleCut = time.Now().Add(-abandonAfter).UnixMilli()
 	)
 	for rows.Next() {
@@ -172,9 +139,6 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 			continue
 		}
 		if d.Time.Completed == 0 {
-			// Still streaming: pin the cursor here so we re-read it once
-			// finished — unless it has been dangling long enough to be a
-			// crashed session that will never complete.
 			if tc >= staleCut && (pinned == 0 || tc < pinned) {
 				pinned = tc
 			}
@@ -186,7 +150,7 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 		t := d.Tokens
 		total := t.Input + t.Output + t.Reasoning + t.Cache.Read + t.Cache.Write
 		if total == 0 {
-			continue // aborted before any usage
+			continue
 		}
 		project := ""
 		if d.Path != nil {
@@ -195,7 +159,7 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 		cost := d.Cost
 		emit(source.UsageEvent{
 			Source:     name,
-			DedupKey:   id, // opencode message ids are globally unique
+			DedupKey:   id,
 			Model:      d.ModelID,
 			SessionID:  sessionID,
 			Project:    project,
@@ -205,7 +169,7 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 			CacheRead:  t.Cache.Read,
 			CacheWrite: t.Cache.Write,
 			Reasoning:  t.Reasoning,
-			RawCost:    &cost, // opencode computes cost itself (0 = free/plan)
+			RawCost:    &cost,
 		})
 	}
 	if err := rows.Err(); err != nil {

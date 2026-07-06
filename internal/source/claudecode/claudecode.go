@@ -1,5 +1,3 @@
-// Package claudecode parses Claude Code session transcripts:
-// ~/.claude/projects/<dash-encoded-cwd>/<session>.jsonl
 package claudecode
 
 import (
@@ -16,13 +14,11 @@ const name = "claude-code"
 
 type Src struct{ root string }
 
-// New returns the source rooted at ~/.claude/projects.
 func New() *Src {
 	home, _ := os.UserHomeDir()
 	return &Src{root: filepath.Join(home, ".claude", "projects")}
 }
 
-// NewWithRoot is used by tests and fixtures.
 func NewWithRoot(root string) *Src { return &Src{root: root} }
 
 func (s *Src) Name() string { return name }
@@ -38,7 +34,6 @@ func (s *Src) ScanTargets() ([]string, error) {
 
 func (s *Src) WatchDirs() []string { return []string{s.root} }
 
-// lineRec is the subset of a transcript line we care about.
 type lineRec struct {
 	Type      string `json:"type"`
 	UUID      string `json:"uuid"`
@@ -62,7 +57,6 @@ var assistantMarker = []byte(`"assistant"`)
 
 func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEvent)) (source.FileState, error) {
 	newOff, err := source.TailLines(path, st.Offset, func(line []byte) {
-		// Fast pre-filter: skip user/summary/system lines without unmarshalling.
 		if !bytes.Contains(line, assistantMarker) {
 			return
 		}
@@ -100,9 +94,6 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 	return ns, err
 }
 
-// dedupKey: streamed/retried lines repeat the same API message — key on
-// message.id+requestId (ccusage-compatible); fall back to message.id alone
-// (conservative: never double-counts), then line uuid.
 func dedupKey(l lineRec) string {
 	switch {
 	case l.Message.ID != "" && l.RequestID != "":

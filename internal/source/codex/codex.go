@@ -1,11 +1,3 @@
-// Package codex parses OpenAI Codex CLI rollout transcripts:
-// ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl
-//
-// Usage arrives as event_msg/token_count events whose info block carries
-// *cumulative* per-session totals; we diff against the previous cumulative
-// totals (persisted in FileState.State) to get per-turn deltas. The model
-// is not on the usage event — it comes from the most recent turn_context
-// line, and can change mid-file (e.g. gpt-5.x vs codex-auto-review).
 package codex
 
 import (
@@ -23,13 +15,11 @@ const name = "codex"
 
 type Src struct{ root string }
 
-// New returns the source rooted at ~/.codex/sessions.
 func New() *Src {
 	home, _ := os.UserHomeDir()
 	return &Src{root: filepath.Join(home, ".codex", "sessions")}
 }
 
-// NewWithRoot is used by tests and fixtures.
 func NewWithRoot(root string) *Src { return &Src{root: root} }
 
 func (s *Src) Name() string { return name }
@@ -40,14 +30,11 @@ func (s *Src) Detect() (bool, string) {
 }
 
 func (s *Src) ScanTargets() ([]string, error) {
-	// sessions/<year>/<month>/<day>/rollout-*.jsonl
 	return filepath.Glob(filepath.Join(s.root, "*", "*", "*", "*.jsonl"))
 }
 
 func (s *Src) WatchDirs() []string { return []string{s.root} }
 
-// totals mirrors codex's token_usage block. input includes cached;
-// output includes reasoning; total = input + output.
 type totals struct {
 	Input     int64 `json:"input_tokens"`
 	Cached    int64 `json:"cached_input_tokens"`
@@ -56,8 +43,6 @@ type totals struct {
 	Total     int64 `json:"total_tokens"`
 }
 
-// fileMeta is the parser state carried across incremental tails of one file
-// (offset-based tailing never re-reads the session_meta header line).
 type fileMeta struct {
 	SessionID string `json:"sid,omitempty"`
 	CWD       string `json:"cwd,omitempty"`
@@ -97,14 +82,13 @@ var (
 func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEvent)) (source.FileState, error) {
 	var meta fileMeta
 	if st.State != "" {
-		_ = json.Unmarshal([]byte(st.State), &meta) // corrupt state => zero value
+		_ = json.Unmarshal([]byte(st.State), &meta)
 	}
 	if meta.SessionID == "" {
 		meta.SessionID = sessionIDFromFilename(path)
 	}
 
 	newOff, err := source.TailLines(path, st.Offset, func(line []byte) {
-		// Fast pre-filter: the bulk of a rollout is response_item lines.
 		isMeta := bytes.Contains(line, markSessionMeta)
 		isTurn := bytes.Contains(line, markTurnContext)
 		isTok := bytes.Contains(line, markTokenCount)
@@ -125,7 +109,7 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 				if p.CWD != "" {
 					meta.CWD = p.CWD
 				}
-				meta.Prev = totals{} // new session header => counters restart
+				meta.Prev = totals{}
 			}
 		case "turn_context":
 			var p turnContextPayload
@@ -135,7 +119,7 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 		case "event_msg":
 			var p eventMsgPayload
 			if json.Unmarshal(l.Payload, &p) != nil || p.Type != "token_count" || p.Info == nil {
-				return // rate-limit-only refresh has info:null
+				return
 			}
 			delta, cumTotal, ok := diff(&meta, p.Info.Total, p.Info.Last)
 			if !ok {
@@ -143,7 +127,7 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 			}
 			ts, terr := time.Parse(time.RFC3339Nano, l.Timestamp)
 			if terr != nil || meta.Model == "" {
-				return // Prev already advanced in diff; never misattribute later deltas
+				return
 			}
 			emit(source.UsageEvent{
 				Source:    name,
@@ -168,13 +152,11 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 	return ns, err
 }
 
-// diff turns cumulative totals into a per-event delta, updating meta.Prev.
-// Returns ok=false when there is nothing to emit (zero delta / no data).
 func diff(meta *fileMeta, cur, last *totals) (d totals, cumTotal int64, ok bool) {
 	switch {
 	case cur != nil:
 		if cur.Total < meta.Prev.Total {
-			meta.Prev = totals{} // counter went backwards: treat as restart
+			meta.Prev = totals{}
 		}
 		d = totals{
 			Input:     cur.Input - meta.Prev.Input,
@@ -186,19 +168,14 @@ func diff(meta *fileMeta, cur, last *totals) (d totals, cumTotal int64, ok bool)
 		meta.Prev = *cur
 		return d, cur.Total, d.Total > 0
 	case last != nil:
-		// No cumulative block; fall back to the per-turn figure as-is.
 		return *last, meta.Prev.Total + last.Total, last.Total > 0
 	default:
 		return d, 0, false
 	}
 }
 
-// sessionIDFromFilename extracts the uuid from rollout-<ts>-<uuid>.jsonl,
-// used only when the session_meta line is behind an already-parsed offset
-// and the saved state was lost.
 func sessionIDFromFilename(path string) string {
 	base := strings.TrimSuffix(filepath.Base(path), ".jsonl")
-	// The uuid itself contains dashes, so take the trailing 36 chars.
 	if len(base) >= 36 {
 		return base[len(base)-36:]
 	}

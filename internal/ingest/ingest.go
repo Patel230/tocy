@@ -1,8 +1,8 @@
-// Package ingest orchestrates scanning all detected sources into the store.
 package ingest
 
 import (
 	"os"
+	"sync"
 	"syscall"
 	"time"
 
@@ -13,7 +13,6 @@ import (
 	"github.com/lakshmanpatel/tocy/internal/store"
 )
 
-// Sources returns all known sources in ingest-priority order.
 func Sources() []source.Source {
 	return []source.Source{
 		claudecode.New(),
@@ -22,41 +21,48 @@ func Sources() []source.Source {
 	}
 }
 
-// alwaysScanner is an optional Source capability: return true to bypass the
-// size/mtime "unchanged" skip (needed for WAL SQLite dbs, whose main file
-// stat often doesn't change until a checkpoint).
-type alwaysScanner interface{ AlwaysScan() bool }
+type alwaysScanner interface {
+	AlwaysScan() bool
+}
 
 func alwaysScan(src source.Source) bool {
 	a, ok := src.(alwaysScanner)
 	return ok && a.AlwaysScan()
 }
 
-// Result summarizes one source's scan.
 type Result struct {
 	Source    string
 	Found     bool
 	Root      string
-	Files     int // files with new data parsed this scan
+	Files     int
 	NewEvents int
 	Err       error
 	Duration  time.Duration
 }
 
-// ScanAll ingests every detected source; safe to re-run any time (idempotent).
+// ScanAll scans each source concurrently. Detection and file parsing are
+// independent per source, and store writes are serialized for free by the
+// store's single-connection SQLite pool, so running sources in parallel
+// only speeds up the I/O-bound Detect/Parse work.
 func ScanAll(st *store.Store, srcs []source.Source) []Result {
-	var results []Result
-	for _, src := range srcs {
-		start := time.Now()
-		res := Result{Source: src.Name()}
-		found, root := src.Detect()
-		res.Found, res.Root = found, root
-		if found {
-			res.Files, res.NewEvents, res.Err = scanSource(st, src)
-		}
-		res.Duration = time.Since(start)
-		results = append(results, res)
+	results := make([]Result, len(srcs))
+	var wg sync.WaitGroup
+	for i, src := range srcs {
+		wg.Add(1)
+		go func(i int, src source.Source) {
+			defer wg.Done()
+			start := time.Now()
+			res := Result{Source: src.Name()}
+			found, root := src.Detect()
+			res.Found, res.Root = found, root
+			if found {
+				res.Files, res.NewEvents, res.Err = scanSource(st, src)
+			}
+			res.Duration = time.Since(start)
+			results[i] = res
+		}(i, src)
 	}
+	wg.Wait()
 	return results
 }
 
@@ -68,7 +74,7 @@ func scanSource(st *store.Store, src source.Source) (files, newEvents int, err e
 	for _, path := range targets {
 		fi, serr := os.Stat(path)
 		if serr != nil {
-			continue // vanished mid-scan
+			continue
 		}
 		size, mtime, ino := fi.Size(), fi.ModTime().Unix(), inodeOf(fi)
 
@@ -79,9 +85,8 @@ func scanSource(st *store.Store, src source.Source) (files, newEvents int, err e
 		if prev == nil {
 			prev = &source.FileState{Path: path, Source: src.Name()}
 		} else if prev.Size == size && prev.Mtime == mtime && prev.Inode == ino && !alwaysScan(src) {
-			continue // unchanged
+			continue
 		}
-		// Truncated/rotated: restart from 0 (dedup keys prevent double count).
 		if size < prev.Offset || (prev.Inode != 0 && ino != 0 && prev.Inode != ino) {
 			prev.Offset = 0
 			prev.State = ""

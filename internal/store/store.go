@@ -1,4 +1,3 @@
-// Package store owns the local SQLite DB at ~/.tocy/tocy.db.
 package store
 
 import (
@@ -32,7 +31,6 @@ CREATE TABLE IF NOT EXISTS ingest_files (
 
 type Store struct{ DB *sql.DB }
 
-// DefaultPath is ~/.tocy/tocy.db, overridable via TOCY_DB (tests, fixtures).
 func DefaultPath() string {
 	if p := os.Getenv("TOCY_DB"); p != "" {
 		return p
@@ -50,7 +48,7 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1) // single writer; avoids SQLITE_BUSY between goroutines
+	db.SetMaxOpenConns(1)
 	s := &Store{DB: db}
 	if err := s.migrate(); err != nil {
 		db.Close()
@@ -77,8 +75,6 @@ func (s *Store) migrate() error {
 	return nil
 }
 
-// InsertEvents inserts with INSERT OR IGNORE (idempotent) and returns how
-// many rows were actually new.
 func (s *Store) InsertEvents(events []source.UsageEvent) (int, error) {
 	if len(events) == 0 {
 		return 0, nil
@@ -115,8 +111,6 @@ func (s *Store) InsertEvents(events []source.UsageEvent) (int, error) {
 	return inserted, tx.Commit()
 }
 
-// --- ingest_files state ---
-
 func (s *Store) GetFileState(path string) (*source.FileState, error) {
 	row := s.DB.QueryRow(`SELECT path, source, inode, size, mtime, offset, COALESCE(state,'')
 		FROM ingest_files WHERE path = ?`, path)
@@ -142,17 +136,13 @@ func (s *Store) SaveFileState(fs source.FileState) error {
 	return err
 }
 
-// --- aggregation ---
-
 type AggOpts struct {
-	Since   time.Time // zero = all time
-	Until   time.Time // zero = now/open
-	GroupBy string    // tool | model | day | project
-	Source  string    // optional filter
+	Since   time.Time
+	Until   time.Time
+	GroupBy string
+	Source  string
 }
 
-// AggRow is a (group key, model) bucket — model kept so cost can be computed
-// per-model at query time by the caller.
 type AggRow struct {
 	Key        string
 	Model      string
@@ -166,6 +156,23 @@ type AggRow struct {
 	HasRawCost bool
 }
 
+type SessionRow struct {
+	SessionID  string
+	Source     string
+	Project    string
+	Model      string
+	Input      int64
+	Output     int64
+	CacheRead  int64
+	CacheWrite int64
+	Reasoning  int64
+	Events     int64
+	RawCost    float64
+	HasRawCost bool
+	FirstTS    int64
+	LastTS     int64
+}
+
 func dimExpr(groupBy string) (string, error) {
 	switch groupBy {
 	case "tool", "":
@@ -176,8 +183,10 @@ func dimExpr(groupBy string) (string, error) {
 		return "strftime('%Y-%m-%d', ts, 'unixepoch', 'localtime')", nil
 	case "project":
 		return "COALESCE(project,'')", nil
+	case "session":
+		return "COALESCE(session_id,'')", nil
 	default:
-		return "", fmt.Errorf("unknown --by value %q (want tool|model|day|project)", groupBy)
+		return "", fmt.Errorf("unknown --by value %q (want tool|model|day|project|session)", groupBy)
 	}
 }
 
@@ -227,12 +236,76 @@ func (s *Store) Aggregate(o AggOpts) ([]AggRow, error) {
 	return out, rows.Err()
 }
 
-// SourceStat summarizes what's in the DB per tool (for `tocy tools`).
 type SourceStat struct {
 	Source  string
 	Events  int64
 	FirstTS time.Time
 	LastTS  time.Time
+}
+
+func (s *Store) Sessions(o AggOpts) ([]SessionRow, error) {
+	var conds []string
+	var args []any
+	if !o.Since.IsZero() {
+		conds = append(conds, "ts >= ?")
+		args = append(args, o.Since.Unix())
+	}
+	if !o.Until.IsZero() {
+		conds = append(conds, "ts < ?")
+		args = append(args, o.Until.Unix())
+	}
+	if o.Source != "" {
+		conds = append(conds, "source = ?")
+		args = append(args, o.Source)
+	}
+	conds = append(conds, "session_id != '' AND session_id IS NOT NULL")
+	where := "WHERE " + strings.Join(conds, " AND ")
+
+	// Grouped by model too (not just session_id, source) so callers can price
+	// each model's tokens individually — a session mixing models can't be
+	// priced correctly from a single blended row.
+	q := fmt.Sprintf(`SELECT session_id, source, MAX(COALESCE(project,'')), COALESCE(model,''),
+			SUM(input), SUM(output),
+			SUM(cache_read), SUM(cache_write), SUM(reasoning),
+			COUNT(*), COALESCE(SUM(raw_cost), 0), COUNT(raw_cost),
+			MIN(ts), MAX(ts)
+		FROM events %s GROUP BY session_id, source, model`, where)
+	rows, err := s.DB.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SessionRow
+	for rows.Next() {
+		var r SessionRow
+		var nRaw int64
+		if err := rows.Scan(&r.SessionID, &r.Source, &r.Project, &r.Model,
+			&r.Input, &r.Output,
+			&r.CacheRead, &r.CacheWrite, &r.Reasoning,
+			&r.Events, &r.RawCost, &nRaw, &r.FirstTS, &r.LastTS); err != nil {
+			return nil, err
+		}
+		r.HasRawCost = nRaw > 0
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) Prune(before time.Time) (int64, error) {
+	res, err := s.DB.Exec(`DELETE FROM events WHERE ts < ?`, before.Unix())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+func (s *Store) EarliestEvent() (time.Time, error) {
+	var ts int64
+	err := s.DB.QueryRow("SELECT MIN(ts) FROM events").Scan(&ts)
+	if err != nil || ts == 0 {
+		return time.Time{}, err
+	}
+	return time.Unix(ts, 0), nil
 }
 
 func (s *Store) SourceStats() (map[string]SourceStat, error) {
