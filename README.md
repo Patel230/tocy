@@ -1,5 +1,9 @@
 # tocy
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/Patel230/tocy?style=flat-square&logo=go)](https://go.dev)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](http://makeapullrequest.com)
+
 Token usage and cost across every AI coding CLI on your machine, in one
 terminal dashboard. Single Go binary, no server, no telemetry — it only
 reads log files and databases that your existing tools already write to
@@ -104,3 +108,7 @@ Fixtures for each parser live under `internal/source/<tool>/testdata/` (or
 inline in the `_test.go` file for the SQLite-backed sources) and cover
 duplicate lines, cumulative-counter resets, mid-session model switches, and
 resuming from a saved offset/cursor.
+
+## License
+
+MIT
