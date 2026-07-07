@@ -3,3 +3,12 @@
 *.db-wal
 *.db-shm
 dist/
+.DS_Store
+*.log
+vendor/
+.idea/
+.vscode/
+/tmp/
+coverage/
+*.test
+*.test.exe
