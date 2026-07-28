@@ -49,8 +49,8 @@ Usage:
       --json                     machine-readable output
   tocy tools                     list detected tools and ingest status
   tocy statusline                compact one-line cost summary for today
-  tocy watch                     keep ingesting (poll loop)
-      --interval <dur>           rescan interval (default 30s)
+  tocy watch                     keep ingesting (fsnotify + periodic rescan)
+      --interval <dur>           fallback rescan interval (default 30s)
       --install                  install launchd agent (macOS)
       --uninstall                remove launchd agent
   tocy prune --keep <days>       delete events older than N days
@@ -173,41 +173,10 @@ func cmdWatch(args []string) error {
 	}
 	defer st.Close()
 
-	srcs := ingest.Sources()
-	detected := 0
-	for _, s := range srcs {
-		if ok, _ := s.Detect(); ok {
-			detected++
-		}
-	}
-	fmt.Printf("  %s  %s\n",
-		color(ansiCyan, "⟳"),
-		color(ansiDim, fmt.Sprintf("watching %d/%d tools, polling every %s", detected, len(srcs), *interval)))
-
 	// Exit cleanly on SIGINT/SIGTERM so the deferred st.Close() runs.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	ticker := time.NewTicker(*interval)
-	defer ticker.Stop()
-
-	for {
-		for _, r := range ingest.ScanAll(st, srcs) {
-			ts := time.Now().Format("15:04:05")
-			switch {
-			case r.Err != nil:
-				fmt.Printf("%s %s %s\n", color(ansiDim, ts), color(ansiBold+ansiRed, r.Source), color(ansiRed, r.Err.Error()))
-			case r.NewEvents > 0:
-				msg := fmt.Sprintf("+%d event(s) from %d file(s) in %s", r.NewEvents, r.Files, r.Duration.Round(time.Millisecond))
-				fmt.Printf("%s %s %s\n", color(ansiDim, ts), color(ansiBold+ansiGreen, r.Source), color(ansiDim, msg))
-			}
-		}
-		select {
-		case <-ctx.Done():
-			fmt.Println("  " + color(ansiDim, "stopping"))
-			return nil
-		case <-ticker.C:
-		}
-	}
+	return runWatch(ctx, st, ingest.Sources(), *interval)
 }
 
 func cmdSessions(args []string) error {
@@ -309,10 +278,10 @@ func cmdHelp(args []string) error {
 		fmt.Println("  " + color(ansiBold, "tocy statusline"))
 		fmt.Println("      " + color(ansiDim, "outputs: $4.25*  ·  3 tools  ·  12.4K tok  ·  31 events"))
 	case "watch":
-		fmt.Println(color(ansiBold+ansiPurple, "tocy watch") + " — " + color(ansiDim, "keep ingesting (poll loop)"))
+		fmt.Println(color(ansiBold+ansiPurple, "tocy watch") + " — " + color(ansiDim, "keep ingesting (fsnotify + periodic rescan)"))
 		fmt.Println()
 		fmt.Println("  " + color(ansiBold, "tocy watch") + " " + color(ansiDim, "[flags]"))
-		fmt.Println("      " + color(ansiDim, "--interval <dur>    rescan interval (default 30s)"))
+		fmt.Println("      " + color(ansiDim, "--interval <dur>    fallback rescan interval (default 30s)"))
 		fmt.Println("      " + color(ansiDim, "--install           install launchd agent (macOS)"))
 		fmt.Println("      " + color(ansiDim, "--uninstall         remove launchd agent"))
 	case "prune":
