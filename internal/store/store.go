@@ -310,12 +310,12 @@ func (s *Store) Prune(before time.Time) (int64, error) {
 }
 
 func (s *Store) EarliestEvent() (time.Time, error) {
-	var ts int64
+	var ts sql.NullInt64
 	err := s.DB.QueryRow("SELECT MIN(ts) FROM events").Scan(&ts)
-	if err != nil || ts == 0 {
+	if err != nil || !ts.Valid || ts.Int64 == 0 {
 		return time.Time{}, err
 	}
-	return time.Unix(ts, 0), nil
+	return time.Unix(ts.Int64, 0), nil
 }
 
 func (s *Store) SourceStats() (map[string]SourceStat, error) {
