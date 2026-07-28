@@ -24,6 +24,7 @@ tocy tools            # what's detected, what's been ingested
 | Claude Code | `~/.claude/projects/**/*.jsonl` | ✅ |
 | Codex CLI | `~/.codex/sessions/**/*.jsonl` | ✅ |
 | opencode | `~/.local/share/opencode/opencode.db` | ✅ |
+| Antigravity CLI | `~/.gemini/antigravity-cli/conversations/*.db` | ✅ (reverse-engineered format) |
 | Cursor CLI/IDE | `~/Library/Application Support/Cursor/.../state.vscdb` | ❌ investigated — [no local token/cost data exists](internal/source/cursor/NOTES.md) |
 | Gemini CLI | `~/.gemini/` | ❌ investigated — [no local usage data exists](internal/source/gemini/NOTES.md) |
 | aider | `~/.aider/` | ❌ no local per-request usage log |
@@ -45,8 +46,8 @@ working binary — no sqlite3 headers or other system deps needed.
 - **Ingest**: each tool has a small parser in `internal/source/<tool>/`
   implementing a common `Source` interface (detect, list files to scan,
   parse). JSONL sources are tailed by byte offset so re-scanning only reads
-  new bytes; the opencode SQLite source tracks an incremental cursor
-  instead. Every ingested row is deduped on `(source, dedup_key)`, so
+  new bytes; the opencode and antigravity SQLite sources track incremental
+  cursors instead. Every ingested row is deduped on `(source, dedup_key)`, so
   `tocy scan` is safe to run as often as you like — nothing is
   double-counted, and nothing is lost if a scan is interrupted mid-file.
 - **Store**: everything lands in a local SQLite DB at `~/.tocy/tocy.db`.

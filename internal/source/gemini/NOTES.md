@@ -27,15 +27,17 @@ only visible through Google's own billing/quota UI, not a local file.
 ## Note: a second, more capable tool is present
 
 `~/.gemini/antigravity-cli/` exists alongside the plain Gemini CLI dirs —
-this looks like Google's "Antigravity" CLI, a separate and more actively
-used tool on this machine. It was **not** investigated in this spike (out
-of the original tool list this project targeted: Claude Code, Codex,
-opencode, Cursor, Gemini CLI, aider). Worth a follow-up spike if the user
-wants tocy to cover it — same "ship only if token fields exist" rule
-should apply.
+this is Google's "Antigravity" CLI, a separate and more actively used
+tool on this machine. **Update (2026-07-28): now shipped as its own
+source** — see `internal/source/antigravity/`. Unlike plain Gemini CLI, it
+persists reliable per-request token counts in per-conversation SQLite dbs
+(`conversations/<uuid>.db`, protobuf blobs in the `steps` table). The
+scanner there reverse-engineers that format; this file remains about the
+plain `gemini` CLI, which still has no local usage data.
 
 ## Revisit if
 
 - Gemini CLI starts writing a local transcript/usage log (some CLI tools
   added this after initial release).
-- The user wants Antigravity CLI investigated as a new source.
+- The Antigravity blob format changes (see `internal/source/antigravity/`
+  for the reverse-engineered field layout it depends on).

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/lakshmanpatel/tocy/internal/source"
+	"github.com/lakshmanpatel/tocy/internal/source/antigravity"
 	"github.com/lakshmanpatel/tocy/internal/source/claudecode"
 	"github.com/lakshmanpatel/tocy/internal/source/codex"
 	"github.com/lakshmanpatel/tocy/internal/source/opencode"
@@ -17,6 +18,7 @@ import (
 
 func Sources() []source.Source {
 	return []source.Source{
+		antigravity.New(),
 		claudecode.New(),
 		codex.New(),
 		opencode.New(),
