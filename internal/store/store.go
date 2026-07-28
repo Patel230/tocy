@@ -72,6 +72,16 @@ func (s *Store) migrate() error {
 			return err
 		}
 	}
+	if v < 2 {
+		// Sessions() groups and filters on session_id; index it so the
+		// query stays fast as the events table grows.
+		if _, err := s.DB.Exec("CREATE INDEX IF NOT EXISTS ix_session ON events(session_id, source)"); err != nil {
+			return err
+		}
+		if _, err := s.DB.Exec("PRAGMA user_version = 2"); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

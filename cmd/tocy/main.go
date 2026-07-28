@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/lakshmanpatel/tocy/internal/ingest"
@@ -117,7 +120,7 @@ func cmdScan(args []string) error {
 	for _, r := range results {
 		had = true
 		switch {
-		case r.Err != nil:
+		case r.Err != nil && r.Files == 0:
 			fmt.Printf("  %s %s\n", color(ansiRed, "✖"), color(ansiBold+ansiRed, r.Source)+"  "+color(ansiRed, r.Err.Error()))
 		case !r.Found:
 			fmt.Printf("  %s %s\n", color(ansiYellow, "•"), color(ansiBold, r.Source)+"  "+color(ansiDim, "not detected"))
@@ -127,20 +130,22 @@ func cmdScan(args []string) error {
 			du := r.Duration.Round(time.Millisecond).String()
 			stat := fmt.Sprintf("%s  %s %s", color(ansiGreen, ev), color(ansiDim, fi), color(ansiDim, du))
 			fmt.Printf("  %s %s  %s\n", color(ansiGreen, "✓"), color(ansiBold, r.Source), stat)
+			if r.Err != nil {
+				fmt.Printf("    %s %s\n", color(ansiYellow, "⚠"), color(ansiYellow, "some files skipped: "+r.Err.Error()))
+			}
+		}
+		if *verbose {
+			for _, d := range r.Details {
+				if d.Err != nil {
+					fmt.Printf("    %s %s  %s\n", color(ansiDim, "└─"), color(ansiDim, d.Path), color(ansiRed, d.Err.Error()))
+				} else {
+					fmt.Printf("    %s %s  %s\n", color(ansiDim, "└─"), color(ansiDim, d.Path), color(ansiGreen, fmt.Sprintf("+%d", d.NewEvents)))
+				}
+			}
 		}
 	}
 	if !had {
 		fmt.Println("  " + color(ansiDim, "no sources scanned"))
-	}
-	if *verbose {
-		for _, r := range results {
-			if r.Err != nil || !r.Found {
-				continue
-			}
-			if r.Files > 0 {
-				fmt.Printf("  %s %s\n", color(ansiDim, "  └─"), color(ansiDim, fmt.Sprintf("%d file(s) scanned", r.Files)))
-			}
-		}
 	}
 	return nil
 }
@@ -179,6 +184,12 @@ func cmdWatch(args []string) error {
 		color(ansiCyan, "⟳"),
 		color(ansiDim, fmt.Sprintf("watching %d/%d tools, polling every %s", detected, len(srcs), *interval)))
 
+	// Exit cleanly on SIGINT/SIGTERM so the deferred st.Close() runs.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ticker := time.NewTicker(*interval)
+	defer ticker.Stop()
+
 	for {
 		for _, r := range ingest.ScanAll(st, srcs) {
 			ts := time.Now().Format("15:04:05")
@@ -190,14 +201,13 @@ func cmdWatch(args []string) error {
 				fmt.Printf("%s %s %s\n", color(ansiDim, ts), color(ansiBold+ansiGreen, r.Source), color(ansiDim, msg))
 			}
 		}
-		time.Sleep(*interval)
+		select {
+		case <-ctx.Done():
+			fmt.Println("  " + color(ansiDim, "stopping"))
+			return nil
+		case <-ticker.C:
+		}
 	}
-}
-
-func todayStart() time.Time {
-	now := time.Now()
-	y, m, d := now.Date()
-	return time.Date(y, m, d, 0, 0, 0, 0, now.Location())
 }
 
 func cmdSessions(args []string) error {

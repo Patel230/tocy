@@ -1,6 +1,9 @@
 package pricing
 
-import "testing"
+import (
+	"sync"
+	"testing"
+)
 
 // table parses the embedded snapshot once for all matcher tests.
 func table(t *testing.T) *Table {
@@ -98,4 +101,26 @@ func TestMemoization(t *testing.T) {
 	if key, seen := tb.memo["nope-nope"]; !seen || key != "" {
 		t.Error("miss not memoized as empty key")
 	}
+}
+
+// TestMatchConcurrent guards the memo mutex: the TUI calls Match from
+// overlapping load goroutines, so this must stay clean under -race.
+func TestMatchConcurrent(t *testing.T) {
+	tb := table(t)
+	models := []string{
+		"claude-sonnet-5", "claude-opus-4-7", "gpt-5.5",
+		"nope-1", "nope-2", "anthropic/claude-sonnet-5",
+	}
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				tb.Match(models[i%len(models)])
+				tb.Cost(models[i%len(models)], 100, 100, 0, 0)
+			}
+		}()
+	}
+	wg.Wait()
 }

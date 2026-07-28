@@ -8,6 +8,7 @@ dist/
 vendor/
 .idea/
 .vscode/
+.claude/settings.local.json
 /tmp/
 coverage/
 *.test

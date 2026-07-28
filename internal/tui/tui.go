@@ -81,6 +81,7 @@ type Model struct {
 
 	scanning  bool
 	spinFrame int
+	spinToken int
 	scanNote  string
 	lastErr   string
 	data      *viewData
@@ -94,15 +95,17 @@ func Run(st *store.Store, prices *pricing.Table) error {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.scanCmd(), tickCmd(), spinCmd())
+	return tea.Batch(m.scanCmd(), tickCmd(), spinCmd(m.spinToken))
 }
 
 func tickCmd() tea.Cmd {
 	return tea.Tick(rescanEvery, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
-func spinCmd() tea.Cmd {
-	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg { return spinMsg(0) })
+// spinCmd carries a token so stale spinner chains die instead of stacking
+// up and accelerating the animation.
+func spinCmd(token int) tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg { return spinMsg(token) })
 }
 
 func (m Model) tool() string {
@@ -272,7 +275,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			if !m.scanning {
 				m.scanning = true
-				return m, tea.Batch(m.scanCmd(), spinCmd())
+				m.spinToken++
+				return m, tea.Batch(m.scanCmd(), spinCmd(m.spinToken))
 			}
 		case "up", "k":
 			if m.scroll > 0 {
@@ -284,16 +288,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scroll = 0
 		}
 	case spinMsg:
+		if int(msg) != m.spinToken {
+			return m, nil // stale chain from a previous scan
+		}
 		m.spinFrame++
 		if m.scanning || m.data == nil {
-			return m, spinCmd()
+			return m, spinCmd(m.spinToken)
 		}
 		return m, nil
 	case tickMsg:
 		cmds := []tea.Cmd{tickCmd()}
 		if !m.scanning {
 			m.scanning = true
-			cmds = append(cmds, m.scanCmd(), spinCmd())
+			m.spinToken++
+			cmds = append(cmds, m.scanCmd(), spinCmd(m.spinToken))
 		}
 		return m, tea.Batch(cmds...)
 	case scanMsg:

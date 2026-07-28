@@ -42,8 +42,6 @@ func (s *Src) ScanTargets() ([]string, error) {
 	return []string{s.dbPath}, nil
 }
 
-func (s *Src) WatchDirs() []string { return nil }
-
 func (s *Src) AlwaysScan() bool { return true }
 
 type cursorState struct {

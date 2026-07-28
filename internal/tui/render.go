@@ -330,25 +330,23 @@ func heatmap(data []int64, start time.Time, width int) []string {
 	}
 
 	active := 0
-	var curStreak, maxStreak, streak int
+	var maxStreak, streak int
 	for _, v := range data {
 		if v > 0 {
+			active++
 			streak++
 			if streak > maxStreak {
 				maxStreak = streak
 			}
 		} else {
-			if streak > curStreak && streak > 0 {
-				curStreak = streak
-			}
 			streak = 0
 		}
-		if v > 0 {
-			active++
-		}
 	}
-	if streak > 0 {
-		curStreak = streak
+	// Current streak counts back from the most recent day; it is zero as
+	// soon as the latest day has no activity.
+	curStreak := 0
+	for i := len(data) - 1; i >= 0 && data[i] > 0; i-- {
+		curStreak++
 	}
 
 	out = append(out, "")

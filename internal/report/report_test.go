@@ -31,3 +31,21 @@ func TestCostCell(t *testing.T) {
 		t.Errorf("CostCell partial = %q", got)
 	}
 }
+
+func TestHumanize(t *testing.T) {
+	cases := []struct {
+		in   int64
+		want string
+	}{
+		{999, "999"},
+		{1_000, "1K"},
+		{10_000, "10K"},
+		{1_500_000, "1.5M"},
+		{1_000_000_000, "1B"},
+	}
+	for _, c := range cases {
+		if got := Humanize(c.in); got != c.want {
+			t.Errorf("Humanize(%d) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

@@ -1,8 +1,11 @@
 package ingest
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/lakshmanpatel/tocy/internal/source"
 	"github.com/lakshmanpatel/tocy/internal/source/claudecode"
@@ -75,5 +78,65 @@ func TestAggregateByModel(t *testing.T) {
 	sonnet := byModel["claude-sonnet-5"]
 	if sonnet.Input != 5 || sonnet.Output != 50 || sonnet.CacheRead != 12000 {
 		t.Errorf("sonnet row wrong: %+v", sonnet)
+	}
+}
+
+// flakySource parses every target except one poisoned path.
+type flakySource struct {
+	files []string
+	bad   string
+}
+
+func (f *flakySource) Name() string                   { return "flaky" }
+func (f *flakySource) Detect() (bool, string)         { return true, "" }
+func (f *flakySource) ScanTargets() ([]string, error) { return f.files, nil }
+
+func (f *flakySource) Parse(path string, st *source.FileState, emit func(source.UsageEvent)) (source.FileState, error) {
+	if path == f.bad {
+		return *st, errors.New("corrupt file")
+	}
+	emit(source.UsageEvent{
+		Source:   f.Name(),
+		DedupKey: path,
+		Model:    "m",
+		TS:       time.Now().UTC(),
+		Input:    1,
+	})
+	return *st, nil
+}
+
+// One corrupt file must not block ingestion of the source's other files.
+func TestScanContinuesPastBadFile(t *testing.T) {
+	st := tempStore(t)
+	dir := t.TempDir()
+	good1 := filepath.Join(dir, "good1.jsonl")
+	bad := filepath.Join(dir, "bad.jsonl")
+	good2 := filepath.Join(dir, "good2.jsonl")
+	for _, p := range []string{good1, bad, good2} {
+		if err := os.WriteFile(p, []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	src := &flakySource{files: []string{good1, bad, good2}, bad: bad}
+	res := ScanAll(st, []source.Source{src})
+	if len(res) != 1 {
+		t.Fatalf("got %d results", len(res))
+	}
+	r := res[0]
+	if r.Err == nil {
+		t.Error("want aggregated error for the corrupt file")
+	}
+	if r.Files != 2 || r.NewEvents != 2 {
+		t.Errorf("got %d files/%d events, want 2/2 (bad file skipped)", r.Files, r.NewEvents)
+	}
+	badSeen := false
+	for _, d := range r.Details {
+		if d.Path == bad && d.Err != nil {
+			badSeen = true
+		}
+	}
+	if !badSeen {
+		t.Errorf("bad file missing from details: %+v", r.Details)
 	}
 }

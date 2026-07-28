@@ -33,8 +33,6 @@ func (s *Src) ScanTargets() ([]string, error) {
 	return filepath.Glob(filepath.Join(s.root, "*", "*", "*", "*.jsonl"))
 }
 
-func (s *Src) WatchDirs() []string { return []string{s.root} }
-
 type totals struct {
 	Input     int64 `json:"input_tokens"`
 	Cached    int64 `json:"cached_input_tokens"`
@@ -48,6 +46,11 @@ type fileMeta struct {
 	CWD       string `json:"cwd,omitempty"`
 	Model     string `json:"model,omitempty"`
 	Prev      totals `json:"prev"`
+	// Seq numbers events emitted from the last_token_usage fallback, whose
+	// keys would otherwise collide when consecutive events share a timestamp
+	// and total. It is part of persisted state, so cold re-parses reproduce
+	// identical dedup keys.
+	Seq int64 `json:"seq,omitempty"`
 }
 
 type lineRec struct {
@@ -121,7 +124,7 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 			if json.Unmarshal(l.Payload, &p) != nil || p.Type != "token_count" || p.Info == nil {
 				return
 			}
-			delta, cumTotal, ok := diff(&meta, p.Info.Total, p.Info.Last)
+			delta, cumTotal, fromLast, ok := diff(&meta, p.Info.Total, p.Info.Last)
 			if !ok {
 				return
 			}
@@ -129,9 +132,14 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 			if terr != nil || meta.Model == "" {
 				return
 			}
+			key := meta.SessionID + ":" + l.Timestamp + ":" + itoa(cumTotal)
+			if fromLast {
+				key += ":" + itoa(meta.Seq)
+				meta.Seq++
+			}
 			emit(source.UsageEvent{
 				Source:    name,
-				DedupKey:  meta.SessionID + ":" + l.Timestamp + ":" + itoa(cumTotal),
+				DedupKey:  key,
 				Model:     meta.Model,
 				SessionID: meta.SessionID,
 				Project:   meta.CWD,
@@ -152,7 +160,7 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 	return ns, err
 }
 
-func diff(meta *fileMeta, cur, last *totals) (d totals, cumTotal int64, ok bool) {
+func diff(meta *fileMeta, cur, last *totals) (d totals, cumTotal int64, fromLast, ok bool) {
 	switch {
 	case cur != nil:
 		if cur.Total < meta.Prev.Total {
@@ -166,11 +174,11 @@ func diff(meta *fileMeta, cur, last *totals) (d totals, cumTotal int64, ok bool)
 			Total:     cur.Total - meta.Prev.Total,
 		}
 		meta.Prev = *cur
-		return d, cur.Total, d.Total > 0
+		return d, cur.Total, false, d.Total > 0
 	case last != nil:
-		return *last, meta.Prev.Total + last.Total, last.Total > 0
+		return *last, meta.Prev.Total + last.Total, true, last.Total > 0
 	default:
-		return d, 0, false
+		return d, 0, false, false
 	}
 }
 

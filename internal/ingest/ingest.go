@@ -1,6 +1,8 @@
 package ingest
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"sync"
 	"syscall"
@@ -30,12 +32,20 @@ func alwaysScan(src source.Source) bool {
 	return ok && a.AlwaysScan()
 }
 
+// FileDetail records the outcome for one scanned file.
+type FileDetail struct {
+	Path      string
+	NewEvents int
+	Err       error
+}
+
 type Result struct {
 	Source    string
 	Found     bool
 	Root      string
 	Files     int
 	NewEvents int
+	Details   []FileDetail
 	Err       error
 	Duration  time.Duration
 }
@@ -56,7 +66,7 @@ func ScanAll(st *store.Store, srcs []source.Source) []Result {
 			found, root := src.Detect()
 			res.Found, res.Root = found, root
 			if found {
-				res.Files, res.NewEvents, res.Err = scanSource(st, src)
+				res.Files, res.NewEvents, res.Details, res.Err = scanSource(st, src)
 			}
 			res.Duration = time.Since(start)
 			results[i] = res
@@ -66,11 +76,14 @@ func ScanAll(st *store.Store, srcs []source.Source) []Result {
 	return results
 }
 
-func scanSource(st *store.Store, src source.Source) (files, newEvents int, err error) {
-	targets, err := src.ScanTargets()
-	if err != nil {
-		return 0, 0, err
+// scanSource ingests every target file, skipping (but reporting) files that
+// fail to parse or persist so one corrupt file can't block the whole source.
+func scanSource(st *store.Store, src source.Source) (files, newEvents int, details []FileDetail, err error) {
+	targets, terr := src.ScanTargets()
+	if terr != nil {
+		return 0, 0, nil, terr
 	}
+	var fileErrs []error
 	for _, path := range targets {
 		fi, serr := os.Stat(path)
 		if serr != nil {
@@ -80,7 +93,7 @@ func scanSource(st *store.Store, src source.Source) (files, newEvents int, err e
 
 		prev, gerr := st.GetFileState(path)
 		if gerr != nil {
-			return files, newEvents, gerr
+			return files, newEvents, details, gerr
 		}
 		if prev == nil {
 			prev = &source.FileState{Path: path, Source: src.Name()}
@@ -97,21 +110,24 @@ func scanSource(st *store.Store, src source.Source) (files, newEvents int, err e
 			batch = append(batch, e)
 		})
 		if perr != nil {
-			return files, newEvents, perr
+			fileErrs = append(fileErrs, fmt.Errorf("%s: %w", path, perr))
+			details = append(details, FileDetail{Path: path, Err: perr})
+			continue
 		}
 		n, ierr := st.InsertEvents(batch)
 		if ierr != nil {
-			return files, newEvents, ierr
+			return files, newEvents, details, ierr
 		}
 		ns.Path, ns.Source = path, src.Name()
 		ns.Size, ns.Mtime, ns.Inode = size, mtime, ino
 		if serr := st.SaveFileState(ns); serr != nil {
-			return files, newEvents, serr
+			return files, newEvents, details, serr
 		}
 		files++
 		newEvents += n
+		details = append(details, FileDetail{Path: path, NewEvents: n})
 	}
-	return files, newEvents, nil
+	return files, newEvents, details, errors.Join(fileErrs...)
 }
 
 func inodeOf(fi os.FileInfo) uint64 {

@@ -32,8 +32,6 @@ func (s *Src) ScanTargets() ([]string, error) {
 	return filepath.Glob(filepath.Join(s.root, "*", "*.jsonl"))
 }
 
-func (s *Src) WatchDirs() []string { return []string{s.root} }
-
 type lineRec struct {
 	Type      string `json:"type"`
 	UUID      string `json:"uuid"`

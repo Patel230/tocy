@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -30,7 +31,11 @@ type ModelPrice struct {
 type Table struct {
 	prices map[string]ModelPrice
 	norm   map[string]string
-	memo   map[string]string
+
+	// memo caches model-name resolution; guarded by mu because Match is
+	// called from concurrent TUI load commands.
+	mu   sync.Mutex
+	memo map[string]string
 
 	Source    string
 	FetchedAt time.Time
@@ -200,14 +205,13 @@ func (t *Table) Match(model string) (ModelPrice, bool) {
 	if model == "" {
 		return ModelPrice{}, false
 	}
-	if key, seen := t.memo[model]; seen {
-		if key == "" {
-			return ModelPrice{}, false
-		}
-		return t.prices[key], true
+	t.mu.Lock()
+	key, seen := t.memo[model]
+	if !seen {
+		key = t.resolve(model)
+		t.memo[model] = key
 	}
-	key := t.resolve(model)
-	t.memo[model] = key
+	t.mu.Unlock()
 	if key == "" {
 		return ModelPrice{}, false
 	}

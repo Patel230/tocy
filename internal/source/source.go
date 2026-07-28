@@ -4,6 +4,7 @@ package source
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"io"
 	"os"
@@ -53,8 +54,6 @@ type Source interface {
 	// Parse reads path starting at st.Offset, emitting events, and returns
 	// the updated state (offset advanced past fully-parsed lines).
 	Parse(path string, st *FileState, emit func(UsageEvent)) (FileState, error)
-	// WatchDirs returns dirs for fsnotify in watch mode; empty => poll-only.
-	WatchDirs() []string
 }
 
 // MaxLine is the largest JSONL line we accept (10 MB).
@@ -62,8 +61,9 @@ const MaxLine = 10 << 20
 
 // TailLines reads path from offset, invoking fn for each newline-terminated
 // line, and returns the new offset. A trailing partial line (no newline, e.g.
-// a write in flight) is only consumed if it is already complete valid JSON;
-// otherwise it is left for the next scan.
+// a write in flight) is only consumed if it is a complete JSON object;
+// otherwise it is left for the next scan. Requiring an object (not just any
+// valid JSON value) rules out a truncated scalar like `123` sneaking through.
 func TailLines(path string, offset int64, fn func(line []byte)) (int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -87,8 +87,9 @@ func TailLines(path string, offset int64, fn func(line []byte)) (int64, error) {
 			continue
 		}
 		if err == io.EOF {
-			// Leftover partial line: consume only if complete JSON.
-			if len(line) > 0 && len(line) <= MaxLine && json.Valid(line) {
+			// Leftover partial line: consume only if a complete JSON object.
+			if t := bytes.TrimSpace(line); len(t) > 0 && t[0] == '{' &&
+				len(line) <= MaxLine && json.Valid(line) {
 				fn(line)
 				pos += int64(len(line))
 			}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -108,16 +109,18 @@ func Build(st *store.Store, o Options, prices *pricing.Table) ([]Line, []string,
 		l.Events += r.Events
 		l.RawCost += r.RawCost
 
+		// Source-reported cost is ground truth (opencode records the actual
+		// charge); fall back to a pricing-table estimate otherwise.
 		var priced bool
-		if prices != nil {
+		switch {
+		case r.HasRawCost:
+			l.Cost += r.RawCost
+			priced = true
+		case prices != nil:
 			if usd, ok := prices.Cost(r.Model, r.Input, r.Output, r.CacheRead, r.CacheWrite); ok {
 				l.Cost += usd
 				priced = true
 			}
-		}
-		if !priced && r.HasRawCost {
-			l.Cost += r.RawCost
-			priced = true
 		}
 		if !priced {
 			l.UnpricedEvents += r.Events
@@ -162,8 +165,23 @@ const (
 	yellow = Yellow
 )
 
+// colorEnabled disables ANSI codes when stdout is not a terminal (pipes,
+// redirects) or the user opted out via NO_COLOR (https://no-color.org).
+var colorEnabled = func() bool {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	fi, err := os.Stdout.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}()
+
 // C wraps s in the given ANSI color code, resetting after.
-func C(code, s string) string { return code + s + Reset }
+func C(code, s string) string {
+	if !colorEnabled {
+		return s
+	}
+	return code + s + Reset
+}
 
 func c(code, s string) string { return C(code, s) }
 
@@ -328,16 +346,17 @@ func BuildSessions(st *store.Store, o Options, prices *pricing.Table) ([]Session
 		sl.Reasoning += r.Reasoning
 		sl.Events += r.Events
 
+		// Same priority as Build: actual source cost wins over an estimate.
 		var priced bool
-		if prices != nil {
+		switch {
+		case r.HasRawCost:
+			sl.Cost += r.RawCost
+			priced = true
+		case prices != nil:
 			if usd, ok := prices.Cost(r.Model, r.Input, r.Output, r.CacheRead, r.CacheWrite); ok {
 				sl.Cost += usd
 				priced = true
 			}
-		}
-		if !priced && r.HasRawCost {
-			sl.Cost += r.RawCost
-			priced = true
 		}
 		if !priced {
 			sl.UnpricedEvents += r.Events
@@ -380,6 +399,7 @@ func RenderSessions(w io.Writer, sessions []SessionLine, o Options, unpriced []s
 	var totalCost float64
 	var totalTokens int64
 	var totalEvents int64
+	var totalUnpriced int64
 	for _, s := range sessions {
 		dur := s.Duration.Truncate(time.Second).String()
 		if s.Duration < time.Minute {
@@ -387,14 +407,7 @@ func RenderSessions(w io.Writer, sessions []SessionLine, o Options, unpriced []s
 		}
 		proj := shortProj(s.Project)
 
-		costStr := Money(s.Cost)
-		if s.UnpricedEvents > 0 {
-			if s.Cost == 0 {
-				costStr = "-*"
-			} else {
-				costStr = Money(s.Cost) + "*"
-			}
-		}
+		costStr := CostCell(Line{Cost: s.Cost, UnpricedEvents: s.UnpricedEvents})
 
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\n",
 			s.TruncID, s.Source, Humanize(s.Total), costStr,
@@ -402,9 +415,10 @@ func RenderSessions(w io.Writer, sessions []SessionLine, o Options, unpriced []s
 		totalCost += s.Cost
 		totalTokens += s.Total
 		totalEvents += s.Events
+		totalUnpriced += s.UnpricedEvents
 	}
 	fmt.Fprintf(tw, "TOTAL\t\t%s\t%s\t%d\t\t\t\n",
-		Humanize(totalTokens), Money(totalCost), totalEvents)
+		Humanize(totalTokens), CostCell(Line{Cost: totalCost, UnpricedEvents: totalUnpriced}), totalEvents)
 	if err := tw.Flush(); err != nil {
 		return err
 	}
@@ -451,6 +465,12 @@ func Statusline(st *store.Store, prices *pricing.Table) (string, error) {
 		Money(totalCost), unpriced, toolCount, Humanize(totalTok), totalEvents), nil
 }
 
+// trimZero drops a redundant ".0" from a humanized value like "1.0M",
+// leaving the unit suffix intact.
 func trimZero(s string) string {
-	return strings.Replace(s, ".0", "", 1)
+	if len(s) < 2 {
+		return s
+	}
+	num, unit := s[:len(s)-1], s[len(s)-1:]
+	return strings.TrimSuffix(num, ".0") + unit
 }
