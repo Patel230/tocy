@@ -50,6 +50,7 @@ Usage:
       --since                    time window (default today)
       --until                    end of window (exclusive): 7d|2w|1m|YYYY-MM-DD
       --json                     machine-readable output
+      --tool <name>              filter to one tool
   tocy tools                     list detected tools and ingest status
   tocy statusline                compact one-line cost summary for today
   tocy watch                     keep ingesting (fsnotify + periodic rescan)
@@ -187,6 +188,7 @@ func cmdSessions(args []string) error {
 	since := fs.String("since", "today", "time window")
 	until := fs.String("until", "", "end of time window (exclusive)")
 	jsonOut := fs.Bool("json", false, "JSON output")
+	tool := fs.String("tool", "", "filter to one tool, e.g. claude-code")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -204,7 +206,8 @@ func cmdSessions(args []string) error {
 		return err
 	}
 	defer func() { _ = st.Close() }()
-	sessions, unpriced, err := report.BuildSessions(st, report.Options{Since: sinceT, Until: untilT}, pricing.Load(false))
+	o := report.Options{Since: sinceT, Until: untilT, Source: *tool}
+	sessions, unpriced, err := report.BuildSessions(st, o, pricing.Load(false))
 	if err != nil {
 		return err
 	}
@@ -293,6 +296,7 @@ func cmdHelp(args []string) error {
 		fmt.Println("      " + color(ansiDim, "--since all|today|7d|24h|2w|1m|YYYY-MM-DD  (default today)"))
 		fmt.Println("      " + color(ansiDim, "--until 7d|2w|1m|YYYY-MM-DD                end of window (exclusive)"))
 		fmt.Println("      " + color(ansiDim, "--json                                   machine-readable output"))
+		fmt.Println("      " + color(ansiDim, "--tool <name>                            filter to one tool"))
 	case "tools":
 		fmt.Println(color(ansiBold+ansiPurple, "tocy tools") + " — " + color(ansiDim, "list detected tools and ingest status"))
 	case "statusline":

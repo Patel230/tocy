@@ -82,10 +82,10 @@ func TestBarListAndCostCell(t *testing.T) {
 }
 
 func TestTruncate(t *testing.T) {
-	if got := truncate("abcdef", 4); got != "abc…" {
+	if got := report.Truncate("abcdef", 4); got != "abc…" {
 		t.Errorf("truncate = %q", got)
 	}
-	if got := truncate("ab", 4); got != "ab" {
+	if got := report.Truncate("ab", 4); got != "ab" {
 		t.Errorf("truncate short = %q", got)
 	}
 }

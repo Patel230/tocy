@@ -483,7 +483,7 @@ func (m Model) View() string {
 		keySty.Render("q") + dimSty.Render("/quit"),
 	}, dimSty.Render("  "))
 	if m.data != nil && len(m.data.unpriced) > 0 {
-		footer += "\n" + warnSty.Render(" * no pricing: "+truncate(strings.Join(m.data.unpriced, ", "), w-22))
+		footer += "\n" + warnSty.Render(" * no pricing: "+report.Truncate(strings.Join(m.data.unpriced, ", "), w-22))
 	}
 
 	return header + "\n" + tabBar + " " + tabLine + "\n" + body + "\n" + footer
@@ -598,15 +598,9 @@ func (m Model) overview(w int) []string {
 
 	var cards []string
 	for i, t := range cardTitles {
-		pi := i
-		switch i {
-		case 0:
-			pi = 7
-		case 1:
-			pi = 6
-		case 2:
-			pi = 9
-		}
+		// Skip the muted sequential palette entries and use vivid,
+		// visually-distinct colors for the summary cards.
+		pi := map[int]int{0: 7, 1: 6, 2: 9}[i]
 		cards = append(cards, cardAt(t, d.cards[i].total, d.cards[i].cost, d.cards[i].unpriced, pi, cardW))
 	}
 	row := lipgloss.JoinHorizontal(lipgloss.Top, cards...)

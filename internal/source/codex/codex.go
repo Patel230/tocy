@@ -135,9 +135,9 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 			if terr != nil || meta.Model == "" {
 				return
 			}
-			key := meta.SessionID + ":" + l.Timestamp + ":" + itoa(cumTotal)
+			key := meta.SessionID + ":" + l.Timestamp + ":" + source.FormatInt(cumTotal)
 			if fromLast {
-				key += ":" + itoa(meta.Seq)
+				key += ":" + source.FormatInt(meta.Seq)
 				meta.Seq++
 			}
 			emit(source.UsageEvent{
@@ -202,17 +202,4 @@ func clamp(v int64) int64 {
 	return v
 }
 
-func itoa(v int64) string {
-	var buf [20]byte
-	i := len(buf)
-	n := uint64(v)
-	for {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-		if n == 0 {
-			break
-		}
-	}
-	return string(buf[i:])
-}
+

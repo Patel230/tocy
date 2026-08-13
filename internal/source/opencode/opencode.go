@@ -54,14 +54,6 @@ type cursorState struct {
 	WalMtimeNS int64 `json:"wal_mtime_ns,omitempty"`
 }
 
-func statOf(path string) (int64, int64) {
-	fi, err := os.Stat(path)
-	if err != nil {
-		return 0, 0
-	}
-	return fi.Size(), fi.ModTime().UnixNano()
-}
-
 type msgData struct {
 	Role   string   `json:"role"`
 	Cost   *float64 `json:"cost"`
@@ -94,8 +86,8 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 		_ = json.Unmarshal([]byte(st.State), &cur)
 	}
 
-	dbSize, dbMt := statOf(path)
-	walSize, walMt := statOf(path + "-wal")
+	dbSize, dbMt := source.StatOf(path)
+	walSize, walMt := source.StatOf(path + "-wal")
 	if st.State != "" && !cur.Pinned &&
 		cur.DBSize == dbSize && cur.DBMtimeNS == dbMt &&
 		cur.WalSize == walSize && cur.WalMtimeNS == walMt {

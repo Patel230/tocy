@@ -177,22 +177,11 @@ func barList(lines []report.Line, width int, label func(report.Line) string) []s
 			cSty = warnSty
 		}
 		out = append(out, fmt.Sprintf("%s %s%-*s %7s %9s",
-			lc.Render(fmt.Sprintf("%-*s", labelW, truncate(lbl, labelW))),
+			lc.Render(fmt.Sprintf("%-*s", labelW, report.Truncate(lbl, labelW))),
 			lc.Render(bar), barW-len([]rune(bar)), "",
 			report.Humanize(l.Total), cSty.Render(report.CostCell(l))))
 	}
 	return out
-}
-
-func truncate(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	if n <= 1 {
-		return "…"
-	}
-	return string(r[:n-1]) + "…"
 }
 
 func cardAt(title string, total int64, cost float64, unpriced bool, paletteIdx int, width int) string {

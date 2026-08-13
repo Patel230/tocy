@@ -13,10 +13,36 @@ import (
 	"time"
 )
 
+// FormatInt converts an int64 to a decimal string without allocation,
+// avoiding strconv for the hot path in protobuf/stream decoders.
+func FormatInt(v int64) string {
+	var buf [20]byte
+	i := len(buf)
+	n := uint64(v)
+	for {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+		if n == 0 {
+			break
+		}
+	}
+	return string(buf[i:])
+}
+
 // SQLiteDSN builds a file: DSN that safely escapes paths containing characters
 // like '?' or '#' that would otherwise be misinterpreted as query fragments.
 func SQLiteDSN(path, query string) string {
 	return (&url.URL{Scheme: "file", Path: path, RawQuery: query}).String()
+}
+
+// StatOf returns a file's size and nanosecond mtime, or (0, 0) on error.
+func StatOf(path string) (size int64, mtimeNS int64) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0, 0
+	}
+	return fi.Size(), fi.ModTime().UnixNano()
 }
 
 // UsageEvent is one normalized token-usage record from any tool.

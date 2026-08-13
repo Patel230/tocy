@@ -80,14 +80,6 @@ type cursorState struct {
 	WalMtimeNS int64 `json:"wal_mtime_ns,omitempty"`
 }
 
-func statOf(path string) (int64, int64) {
-	fi, err := os.Stat(path)
-	if err != nil {
-		return 0, 0
-	}
-	return fi.Size(), fi.ModTime().UnixNano()
-}
-
 func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEvent)) (source.FileState, error) {
 	ns := *st
 	ns.Offset = 0
@@ -97,8 +89,8 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 		_ = json.Unmarshal([]byte(st.State), &cur)
 	}
 
-	dbSize, dbMt := statOf(path)
-	walSize, walMt := statOf(path + "-wal")
+	dbSize, dbMt := source.StatOf(path)
+	walSize, walMt := source.StatOf(path + "-wal")
 	if st.State != "" &&
 		cur.DBSize == dbSize && cur.DBMtimeNS == dbMt &&
 		cur.WalSize == walSize && cur.WalMtimeNS == walMt {
@@ -143,13 +135,13 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 		}
 		key := u.genID
 		if key == "" {
-			key = sessionID + ":" + itoa(idx)
+			key = sessionID + ":" + source.FormatInt(idx)
 		}
 		model := s.names[u.modelID]
 		if model == "" && u.modelID != 0 {
 			// Stable placeholder so unmapped ids stay identifiable
 			// instead of blending into one blank "unknown" row.
-			model = "antigravity-" + itoa(int64(u.modelID))
+			model = "antigravity-" + source.FormatInt(int64(u.modelID))
 		}
 		emit(source.UsageEvent{
 			Source:    name,
@@ -362,16 +354,4 @@ func pbVarint(b []byte, num int) (uint64, bool) {
 	return 0, false
 }
 
-func itoa(v int64) string {
-	if v == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	i := len(buf)
-	for v > 0 {
-		i--
-		buf[i] = byte('0' + v%10)
-		v /= 10
-	}
-	return string(buf[i:])
-}
+

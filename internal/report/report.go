@@ -217,8 +217,6 @@ func C(code, s string) string {
 	return code + s + Reset
 }
 
-func c(code, s string) string { return C(code, s) }
-
 func Render(w io.Writer, lines []Line, o Options, unpriced []string) error {
 	if o.JSON {
 		enc := json.NewEncoder(w)
@@ -226,7 +224,7 @@ func Render(w io.Writer, lines []Line, o Options, unpriced []string) error {
 		return enc.Encode(lines)
 	}
 	if len(lines) == 0 {
-		_, err := fmt.Fprintln(w, "  "+c(dim, "no usage data — run `tocy scan` first"))
+		_, err := fmt.Fprintln(w, "  "+C(dim, "no usage data — run `tocy scan` first"))
 		return err
 	}
 	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
@@ -238,12 +236,12 @@ func Render(w io.Writer, lines []Line, o Options, unpriced []string) error {
 	for _, l := range lines {
 		key := l.Key
 		if o.GroupBy == "project" {
-			key = shortProj(key)
+			key = ShortProj(key)
 		}
 		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n", key,
 			Humanize(l.Input), Humanize(l.Output), Humanize(l.CacheRead),
 			Humanize(l.CacheWrite), Humanize(l.Reasoning), Humanize(l.Total), l.Events,
-			costCell(l)); err != nil {
+			CostCell(l)); err != nil {
 			return err
 		}
 		tot.Input += l.Input
@@ -259,14 +257,14 @@ func Render(w io.Writer, lines []Line, o Options, unpriced []string) error {
 	if _, err := fmt.Fprintf(tw, "TOTAL\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
 		Humanize(tot.Input), Humanize(tot.Output), Humanize(tot.CacheRead),
 		Humanize(tot.CacheWrite), Humanize(tot.Reasoning), Humanize(tot.Total), tot.Events,
-		costCell(tot)); err != nil {
+		CostCell(tot)); err != nil {
 		return err
 	}
 	if err := tw.Flush(); err != nil {
 		return err
 	}
 	if len(unpriced) > 0 {
-		if _, err := fmt.Fprintf(w, "  %s\n", c(yellow, "* unpriced: "+strings.Join(unpriced, ", "))); err != nil {
+		if _, err := fmt.Fprintf(w, "  %s\n", C(yellow, "* unpriced: "+strings.Join(unpriced, ", "))); err != nil {
 			return err
 		}
 	}
@@ -285,8 +283,6 @@ func CostCell(l Line) string {
 	}
 	return s
 }
-
-func costCell(l Line) string { return CostCell(l) }
 
 func Money(v float64) string {
 	switch {
@@ -319,8 +315,6 @@ func ShortProj(p string) string {
 	}
 	return ".../" + strings.Join(parts[len(parts)-2:], "/")
 }
-
-func shortProj(p string) string { return ShortProj(p) }
 
 // Truncate shortens s to at most n runes, replacing the tail with an
 // ellipsis when it doesn't fit.
@@ -439,7 +433,7 @@ func RenderSessions(w io.Writer, sessions []SessionLine, o Options, unpriced []s
 		return enc.Encode(sessions)
 	}
 	if len(sessions) == 0 {
-		_, err := fmt.Fprintln(w, "  "+c(dim, "no sessions found"))
+		_, err := fmt.Fprintln(w, "  "+C(dim, "no sessions found"))
 		return err
 	}
 	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
@@ -455,7 +449,7 @@ func RenderSessions(w io.Writer, sessions []SessionLine, o Options, unpriced []s
 		if s.Duration < time.Minute {
 			dur = fmt.Sprintf("%ds", int(s.Duration.Seconds()))
 		}
-		proj := shortProj(s.Project)
+		proj := ShortProj(s.Project)
 
 		costStr := CostCell(Line{Cost: s.Cost, UnpricedEvents: s.UnpricedEvents})
 
@@ -477,7 +471,7 @@ func RenderSessions(w io.Writer, sessions []SessionLine, o Options, unpriced []s
 		return err
 	}
 	if len(unpriced) > 0 {
-		if _, err := fmt.Fprintf(w, "  %s\n", c(yellow, "* unpriced: "+strings.Join(unpriced, ", "))); err != nil {
+		if _, err := fmt.Fprintf(w, "  %s\n", C(yellow, "* unpriced: "+strings.Join(unpriced, ", "))); err != nil {
 			return err
 		}
 	}
@@ -506,7 +500,7 @@ func Statusline(st *store.Store, prices *pricing.Table) (string, error) {
 	}
 
 	if toolCount == 0 {
-		return c(dim, "no data today"), nil
+		return C(dim, "no data today"), nil
 	}
 
 	unpriced := ""
