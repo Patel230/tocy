@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,10 +41,17 @@ func DefaultPath() string {
 }
 
 func Open(path string) (*Store, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(3000)&_pragma=synchronous(NORMAL)"
+	// Only tighten the application-owned default directory. TOCY_DB may point
+	// into a user-managed directory whose permissions we must not change.
+	if filepath.Base(filepath.Dir(path)) == ".tocy" {
+		if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+			return nil, err
+		}
+	}
+	dsn := sqliteDSN(path, "_pragma=journal_mode(WAL)&_pragma=busy_timeout(3000)&_pragma=synchronous(NORMAL)")
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -51,10 +59,16 @@ func Open(path string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	s := &Store{DB: db}
 	if err := s.migrate(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
+	_ = os.Chmod(path, 0o600)
 	return s, nil
+}
+
+func sqliteDSN(path, query string) string {
+	u := &url.URL{Scheme: "file", Path: path, RawQuery: query}
+	return u.String()
 }
 
 func (s *Store) Close() error { return s.DB.Close() }
@@ -93,7 +107,7 @@ func (s *Store) InsertEvents(events []source.UsageEvent) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO events
 		(source, dedup_key, ts, model, session_id, project,
 		 input, output, cache_read, cache_write, reasoning, raw_cost)
@@ -101,7 +115,7 @@ func (s *Store) InsertEvents(events []source.UsageEvent) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 	inserted := 0
 	for _, e := range events {
 		var rawCost any
@@ -154,33 +168,37 @@ type AggOpts struct {
 }
 
 type AggRow struct {
-	Key        string
-	Model      string
-	Input      int64
-	Output     int64
-	CacheRead  int64
-	CacheWrite int64
-	Reasoning  int64
-	Events     int64
-	RawCost    float64
-	HasRawCost bool
+	Key                                                            string
+	Model                                                          string
+	Input                                                          int64
+	Output                                                         int64
+	CacheRead                                                      int64
+	CacheWrite                                                     int64
+	Reasoning                                                      int64
+	Events                                                         int64
+	RawCost                                                        float64
+	HasRawCost                                                     bool
+	EstInput, EstOutput, EstCacheRead, EstCacheWrite, EstReasoning int64
+	EstEvents                                                      int64
 }
 
 type SessionRow struct {
-	SessionID  string
-	Source     string
-	Project    string
-	Model      string
-	Input      int64
-	Output     int64
-	CacheRead  int64
-	CacheWrite int64
-	Reasoning  int64
-	Events     int64
-	RawCost    float64
-	HasRawCost bool
-	FirstTS    int64
-	LastTS     int64
+	SessionID                                                      string
+	Source                                                         string
+	Project                                                        string
+	Model                                                          string
+	Input                                                          int64
+	Output                                                         int64
+	CacheRead                                                      int64
+	CacheWrite                                                     int64
+	Reasoning                                                      int64
+	Events                                                         int64
+	RawCost                                                        float64
+	HasRawCost                                                     bool
+	EstInput, EstOutput, EstCacheRead, EstCacheWrite, EstReasoning int64
+	EstEvents                                                      int64
+	FirstTS                                                        int64
+	LastTS                                                         int64
 }
 
 func dimExpr(groupBy string) (string, error) {
@@ -224,20 +242,27 @@ func (s *Store) Aggregate(o AggOpts) ([]AggRow, error) {
 		where = "WHERE " + strings.Join(conds, " AND ")
 	}
 	q := fmt.Sprintf(`SELECT %s AS k, COALESCE(model,'unknown'),
-			SUM(input), SUM(output), SUM(cache_read), SUM(cache_write), SUM(reasoning),
-			COUNT(*), COALESCE(SUM(raw_cost), 0), COUNT(raw_cost)
-		FROM events %s GROUP BY k, model ORDER BY k`, dim, where)
+				SUM(input), SUM(output), SUM(cache_read), SUM(cache_write), SUM(reasoning),
+				COUNT(*), COALESCE(SUM(raw_cost), 0), COUNT(raw_cost)
+				,COALESCE(SUM(CASE WHEN raw_cost IS NULL THEN input ELSE 0 END),0)
+				,COALESCE(SUM(CASE WHEN raw_cost IS NULL THEN output ELSE 0 END),0)
+				,COALESCE(SUM(CASE WHEN raw_cost IS NULL THEN cache_read ELSE 0 END),0)
+				,COALESCE(SUM(CASE WHEN raw_cost IS NULL THEN cache_write ELSE 0 END),0)
+				,COALESCE(SUM(CASE WHEN raw_cost IS NULL THEN reasoning ELSE 0 END),0)
+				,COUNT(CASE WHEN raw_cost IS NULL THEN 1 END)
+			FROM events %s GROUP BY k, model ORDER BY k`, dim, where)
 	rows, err := s.DB.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []AggRow
 	for rows.Next() {
 		var r AggRow
 		var nRaw int64
 		if err := rows.Scan(&r.Key, &r.Model, &r.Input, &r.Output, &r.CacheRead,
-			&r.CacheWrite, &r.Reasoning, &r.Events, &r.RawCost, &nRaw); err != nil {
+			&r.CacheWrite, &r.Reasoning, &r.Events, &r.RawCost, &nRaw,
+			&r.EstInput, &r.EstOutput, &r.EstCacheRead, &r.EstCacheWrite, &r.EstReasoning, &r.EstEvents); err != nil {
 			return nil, err
 		}
 		r.HasRawCost = nRaw > 0
@@ -278,13 +303,19 @@ func (s *Store) Sessions(o AggOpts) ([]SessionRow, error) {
 			SUM(input), SUM(output),
 			SUM(cache_read), SUM(cache_write), SUM(reasoning),
 			COUNT(*), COALESCE(SUM(raw_cost), 0), COUNT(raw_cost),
+			COALESCE(SUM(CASE WHEN raw_cost IS NULL THEN input ELSE 0 END),0),
+			COALESCE(SUM(CASE WHEN raw_cost IS NULL THEN output ELSE 0 END),0),
+			COALESCE(SUM(CASE WHEN raw_cost IS NULL THEN cache_read ELSE 0 END),0),
+			COALESCE(SUM(CASE WHEN raw_cost IS NULL THEN cache_write ELSE 0 END),0),
+			COALESCE(SUM(CASE WHEN raw_cost IS NULL THEN reasoning ELSE 0 END),0),
+			COUNT(CASE WHEN raw_cost IS NULL THEN 1 END),
 			MIN(ts), MAX(ts)
 		FROM events %s GROUP BY session_id, source, model`, where)
 	rows, err := s.DB.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []SessionRow
 	for rows.Next() {
 		var r SessionRow
@@ -292,7 +323,10 @@ func (s *Store) Sessions(o AggOpts) ([]SessionRow, error) {
 		if err := rows.Scan(&r.SessionID, &r.Source, &r.Project, &r.Model,
 			&r.Input, &r.Output,
 			&r.CacheRead, &r.CacheWrite, &r.Reasoning,
-			&r.Events, &r.RawCost, &nRaw, &r.FirstTS, &r.LastTS); err != nil {
+			&r.Events, &r.RawCost, &nRaw,
+			&r.EstInput, &r.EstOutput, &r.EstCacheRead, &r.EstCacheWrite, &r.EstReasoning,
+			&r.EstEvents,
+			&r.FirstTS, &r.LastTS); err != nil {
 			return nil, err
 		}
 		r.HasRawCost = nRaw > 0
@@ -323,7 +357,7 @@ func (s *Store) SourceStats() (map[string]SourceStat, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := map[string]SourceStat{}
 	for rows.Next() {
 		var st SourceStat

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -14,7 +15,7 @@ func openTest(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
 
@@ -38,14 +39,16 @@ func TestMigrateVersionAndReopen(t *testing.T) {
 	if v != 2 {
 		t.Fatalf("user_version = %d, want 2", v)
 	}
-	s.Close()
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	// Reopening an already-migrated DB must succeed and keep the version.
 	s2, err := Open(path)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 	if err := s2.DB.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
 		t.Fatalf("user_version: %v", err)
 	}
@@ -59,6 +62,32 @@ func TestMigrateVersionAndReopen(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatal("ix_session index missing after migration")
+	}
+}
+
+func TestOpenEscapesSQLitePath(t *testing.T) {
+	dir := t.TempDir()
+	privateDir := filepath.Join(dir, ".tocy")
+	path := filepath.Join(privateDir, "usage?with#chars.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("database was not created at exact path: %v", err)
+	}
+	if info, err := os.Stat(privateDir); err != nil {
+		t.Fatalf("stat database directory: %v", err)
+	} else if info.Mode().Perm() != 0o700 {
+		t.Fatalf("database directory permissions = %v; want 0700", info.Mode().Perm())
+	}
+	if info, err := os.Stat(path); err != nil {
+		t.Fatalf("stat database: %v", err)
+	} else if info.Mode().Perm() != 0o600 {
+		t.Fatalf("database permissions = %v; want 0600", info.Mode().Perm())
 	}
 }
 
@@ -135,6 +164,27 @@ func TestAggregateGroupingAndFilters(t *testing.T) {
 
 	if _, err := s.Aggregate(AggOpts{GroupBy: "bogus"}); err == nil {
 		t.Fatal("Aggregate with bad GroupBy: want error")
+	}
+}
+
+func TestAggregateSplitsRawAndEstimatedEvents(t *testing.T) {
+	s := openTest(t)
+	base := time.Unix(1700000000, 0)
+	cost := 0.25
+	events := []source.UsageEvent{
+		ev("opencode", "raw", "m", "s", base, 100, 10),
+		ev("codex", "estimate", "m", "s", base.Add(time.Second), 200, 20),
+	}
+	events[0].RawCost = &cost
+	if _, err := s.InsertEvents(events); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.Aggregate(AggOpts{GroupBy: "model"})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows = %+v, err=%v", rows, err)
+	}
+	if rows[0].RawCost != cost || rows[0].EstInput != 200 || rows[0].EstOutput != 20 || rows[0].EstEvents != 1 {
+		t.Fatalf("raw/estimate split = %+v", rows[0])
 	}
 }
 

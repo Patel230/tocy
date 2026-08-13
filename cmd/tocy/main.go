@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -53,7 +54,7 @@ Usage:
       --interval <dur>           fallback rescan interval (default 30s)
       --install                  install launchd agent (macOS)
       --uninstall                remove launchd agent
-  tocy prune --keep <days>       delete events older than N days
+  tocy prune --keep <days> --yes delete events older than N days
   tocy pricing refresh           force-refresh pricing cache
   tocy version                   print version
   tocy help [cmd]                this help, or help for a specific command
@@ -114,7 +115,7 @@ func cmdScan(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	results := ingest.ScanAll(st, ingest.Sources())
 	had := false
 	for _, r := range results {
@@ -158,20 +159,20 @@ func cmdWatch(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if *interval < time.Second {
+		return fmt.Errorf("--interval must be at least 1s")
+	}
 	if *uninstall {
 		return uninstallLaunchAgent()
 	}
 	if *install {
 		return installLaunchAgent(interval.String())
 	}
-	if *interval < time.Second {
-		return fmt.Errorf("--interval must be at least 1s")
-	}
 	st, err := openStore()
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	// Exit cleanly on SIGINT/SIGTERM so the deferred st.Close() runs.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -194,7 +195,7 @@ func cmdSessions(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	sessions, unpriced, err := report.BuildSessions(st, report.Options{Since: sinceT}, pricing.Load(false))
 	if err != nil {
 		return err
@@ -207,7 +208,7 @@ func cmdStatusline() error {
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	line, err := report.Statusline(st, pricing.Load(false))
 	if err != nil {
 		return err
@@ -218,19 +219,29 @@ func cmdStatusline() error {
 
 func cmdPrune(args []string) error {
 	fs := flag.NewFlagSet("prune", flag.ExitOnError)
-	keep := fs.Int("keep", 90, "keep events newer than N days")
+	keep := fs.Int("keep", 0, "keep events newer than N days")
+	yes := fs.Bool("yes", false, "confirm deletion without prompting")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *keep < 1 {
-		return fmt.Errorf("--keep must be >= 1")
+	keepSet := false
+	for _, arg := range args {
+		if arg == "--keep" || strings.HasPrefix(arg, "--keep=") {
+			keepSet = true
+		}
+	}
+	if !keepSet || *keep < 1 {
+		return fmt.Errorf("--keep is required and must be >= 1")
+	}
+	if !*yes {
+		return fmt.Errorf("prune deletes data permanently; re-run with --yes to confirm")
 	}
 	before := time.Now().AddDate(0, 0, -*keep)
 	st, err := openStore()
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	n, err := st.Prune(before)
 	if err != nil {
 		return err
@@ -289,6 +300,7 @@ func cmdHelp(args []string) error {
 		fmt.Println()
 		fmt.Println("  " + color(ansiBold, "tocy prune --keep <days>"))
 		fmt.Println("      " + color(ansiDim, "--keep <days>  keep events newer than N days (required)"))
+		fmt.Println("      " + color(ansiDim, "--yes         confirm permanent deletion"))
 	case "pricing":
 		fmt.Println(color(ansiBold+ansiPurple, "tocy pricing refresh") + " — " + color(ansiDim, "force-refresh pricing cache"))
 	case "version":
@@ -316,7 +328,7 @@ func cmdReport(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	o := report.Options{Since: sinceT, GroupBy: *by, Source: *tool, JSON: *jsonOut}
 	lines, unpriced, err := report.Build(st, o, pricing.Load(false))
 	if err != nil {
@@ -348,7 +360,7 @@ func cmdTools() error {
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	stats, err := st.SourceStats()
 	if err != nil {
 		return err
@@ -375,6 +387,6 @@ func cmdDashboard() error {
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 	return tui.Run(st, pricing.Load(false))
 }

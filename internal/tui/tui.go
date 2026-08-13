@@ -64,7 +64,10 @@ type (
 	tickMsg time.Time
 	spinMsg int
 	scanMsg struct{ note string }
-	dataMsg struct{ vd *viewData }
+	dataMsg struct {
+		seq int
+		vd  *viewData
+	}
 )
 
 type Model struct {
@@ -84,6 +87,7 @@ type Model struct {
 	spinToken int
 	scanNote  string
 	lastErr   string
+	loadSeq   int
 	data      *viewData
 }
 
@@ -137,14 +141,14 @@ func (m Model) scanCmd() tea.Cmd {
 }
 
 func (m Model) loadCmd() tea.Cmd {
-	st, prices, tool := m.st, m.prices, m.tool()
+	st, prices, tool, seq := m.st, m.prices, m.tool(), m.loadSeq
 	since := ranges[m.rangeIdx].since(time.Now())
 	return func() tea.Msg {
 		vd, err := load(st, prices, since, tool)
 		if err != nil {
 			vd = &viewData{err: err}
 		}
-		return dataMsg{vd}
+		return dataMsg{seq: seq, vd: vd}
 	}
 }
 
@@ -185,6 +189,10 @@ func load(st *store.Store, prices *pricing.Table, since time.Time, tool string) 
 	earliest, _ := st.EarliestEvent()
 	if earliest.IsZero() || earliest.After(now) {
 		earliest = now.AddDate(0, 0, -(streakWeeks*7 - 1))
+	}
+	windowStart := now.AddDate(0, 0, -(streakWeeks*7 - 1))
+	if earliest.Before(windowStart) {
+		earliest = windowStart
 	}
 	vd.streakStart = earliest
 	streakDays := int(now.Sub(earliest).Hours()/24) + 1
@@ -260,6 +268,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showHelp = !m.showHelp
 		case "t":
 			m.rangeIdx = (m.rangeIdx + 1) % len(ranges)
+			m.loadSeq++
 			m.scroll = 0
 			return m, m.loadCmd()
 		case "f":
@@ -268,6 +277,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				n = len(m.data.tools) + 1
 			}
 			m.toolIdx = (m.toolIdx + 1) % n
+			m.loadSeq++
 			m.scroll = 0
 			return m, m.loadCmd()
 		case "s":
@@ -307,8 +317,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case scanMsg:
 		m.scanning = false
 		m.scanNote = msg.note
+		m.loadSeq++
 		return m, m.loadCmd()
 	case dataMsg:
+		if msg.seq != m.loadSeq {
+			return m, nil
+		}
 		if msg.vd.err != nil {
 			m.lastErr = msg.vd.err.Error()
 			return m, nil
@@ -346,12 +360,8 @@ func buildInsights(vd *viewData) string {
 		}
 		parts = append(parts, fmt.Sprintf("%.0f%% from %s", float64(topTotal)/float64(totalAll)*100, topTool))
 	}
-	var totCost float64
-	for _, c := range vd.cards {
-		totCost += c.cost
-	}
-	if totCost > 0 {
-		parts = append(parts, fmt.Sprintf("cost %s", report.Money(totCost)))
+	if vd.cards[1].cost > 0 {
+		parts = append(parts, fmt.Sprintf("7d cost %s", report.Money(vd.cards[1].cost)))
 	}
 	if len(vd.unpriced) > 0 {
 		parts = append(parts, fmt.Sprintf("%d unpriced model(s)", len(vd.unpriced)))

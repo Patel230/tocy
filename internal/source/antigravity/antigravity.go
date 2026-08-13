@@ -26,6 +26,7 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,6 +46,10 @@ type Src struct {
 	// every db's gen_metadata covers every id its steps reference. Parse
 	// is called sequentially per source, so no locking is needed.
 	names map[uint64]string
+}
+
+func sqliteDSN(path, query string) string {
+	return (&url.URL{Scheme: "file", Path: path, RawQuery: query}).String()
 }
 
 func New() *Src {
@@ -104,11 +109,11 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 		return ns, nil
 	}
 
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(2000)")
+	db, err := sql.Open("sqlite", sqliteDSN(path, "mode=ro&_pragma=busy_timeout(2000)"))
 	if err != nil {
 		return ns, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	sessionID := strings.TrimSuffix(filepath.Base(path), ".db")
 	for id, nm := range modelNames(db) {
@@ -122,7 +127,7 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 	if err != nil {
 		return ns, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	maxIdx := cur.LastIdx
 	for rows.Next() {
@@ -237,7 +242,7 @@ func modelNames(db *sql.DB) map[uint64]string {
 	if err != nil {
 		return out
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var data []byte
 		if rows.Scan(&data) != nil {

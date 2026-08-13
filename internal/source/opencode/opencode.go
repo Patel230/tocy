@@ -3,6 +3,7 @@ package opencode
 import (
 	"database/sql"
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -14,6 +15,10 @@ import (
 
 const name = "opencode"
 const abandonAfter = 24 * time.Hour
+
+func sqliteDSN(path, query string) string {
+	return (&url.URL{Scheme: "file", Path: path, RawQuery: query}).String()
+}
 
 type Src struct{ dbPath string }
 
@@ -62,8 +67,8 @@ func statOf(path string) (int64, int64) {
 }
 
 type msgData struct {
-	Role   string  `json:"role"`
-	Cost   float64 `json:"cost"`
+	Role   string   `json:"role"`
+	Cost   *float64 `json:"cost"`
 	Tokens *struct {
 		Input     int64 `json:"input"`
 		Output    int64 `json:"output"`
@@ -101,11 +106,11 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 		return ns, nil
 	}
 
-	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(2000)")
+	db, err := sql.Open("sqlite", sqliteDSN(path, "mode=ro&_pragma=busy_timeout(2000)"))
 	if err != nil {
 		return ns, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	rows, err := db.Query(
 		`SELECT id, session_id, time_created, data FROM message
@@ -113,7 +118,7 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 	if err != nil {
 		return ns, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var (
 		maxSeen  = cur.CursorMS
@@ -154,7 +159,6 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 		if d.Path != nil {
 			project = d.Path.CWD
 		}
-		cost := d.Cost
 		emit(source.UsageEvent{
 			Source:     name,
 			DedupKey:   id,
@@ -167,7 +171,7 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 			CacheRead:  t.Cache.Read,
 			CacheWrite: t.Cache.Write,
 			Reasoning:  t.Reasoning,
-			RawCost:    &cost,
+			RawCost:    d.Cost,
 		})
 	}
 	if err := rows.Err(); err != nil {

@@ -18,7 +18,7 @@ func newFixtureDB(t *testing.T) (string, *sql.DB) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { _ = db.Close() })
 	if _, err := db.Exec(`CREATE TABLE message (
 		id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
 		time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL,

@@ -14,7 +14,7 @@ import (
 // --- tiny protobuf writer mirroring the reader in antigravity.go ---
 
 func pvarint(num int, v uint64) []byte {
-	out := binary.AppendUvarint(nil, uint64(num)<<3|0)
+	out := binary.AppendUvarint(nil, uint64(num)<<3)
 	return binary.AppendUvarint(out, v)
 }
 
@@ -84,7 +84,7 @@ func writeTestDB(t *testing.T, dir, session string) string {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if _, err := db.Exec(testSchema); err != nil {
 		t.Fatalf("schema: %v", err)
 	}
@@ -188,7 +188,9 @@ func TestParseIncremental(t *testing.T) {
 		stepMeta(1785000600, 1071, 200, 20, 0, "gen-ccc")); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	db.Close()
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
 	future := time.Now().Add(2 * time.Second)
 	if err := os.Chtimes(path, future, future); err != nil {
 		t.Fatalf("chtimes: %v", err)

@@ -115,15 +115,21 @@ func Build(st *store.Store, o Options, prices *pricing.Table) ([]Line, []string,
 		switch {
 		case r.HasRawCost:
 			l.Cost += r.RawCost
-			priced = true
+			priced = r.EstEvents == 0
+			if r.EstEvents > 0 && prices != nil {
+				if usd, ok := prices.Cost(r.Model, r.EstInput, r.EstOutput, r.EstCacheRead, r.EstCacheWrite, r.EstReasoning); ok {
+					l.Cost += usd
+					priced = true
+				}
+			}
 		case prices != nil:
-			if usd, ok := prices.Cost(r.Model, r.Input, r.Output, r.CacheRead, r.CacheWrite); ok {
+			if usd, ok := prices.Cost(r.Model, r.EstInput, r.EstOutput, r.EstCacheRead, r.EstCacheWrite, r.EstReasoning); ok {
 				l.Cost += usd
 				priced = true
 			}
 		}
 		if !priced {
-			l.UnpricedEvents += r.Events
+			l.UnpricedEvents += r.EstEvents
 			unpriced[r.Model] = true
 		}
 	}
@@ -192,22 +198,26 @@ func Render(w io.Writer, lines []Line, o Options, unpriced []string) error {
 		return enc.Encode(lines)
 	}
 	if len(lines) == 0 {
-		fmt.Fprintln(w, "  "+c(dim, "no usage data — run `tocy scan` first"))
-		return nil
+		_, err := fmt.Fprintln(w, "  "+c(dim, "no usage data — run `tocy scan` first"))
+		return err
 	}
 	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 	head := strings.ToUpper(orDefault(o.GroupBy, "tool"))
-	fmt.Fprintf(tw, "%s\tINPUT\tOUTPUT\tCACHE R\tCACHE W\tREASON\tTOTAL\tEVENTS\tCOST\n", head)
+	if _, err := fmt.Fprintf(tw, "%s\tINPUT\tOUTPUT\tCACHE R\tCACHE W\tREASON\tTOTAL\tEVENTS\tCOST\n", head); err != nil {
+		return err
+	}
 	var tot Line
 	for _, l := range lines {
 		key := l.Key
 		if o.GroupBy == "project" {
 			key = shortProj(key)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n", key,
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n", key,
 			Humanize(l.Input), Humanize(l.Output), Humanize(l.CacheRead),
 			Humanize(l.CacheWrite), Humanize(l.Reasoning), Humanize(l.Total), l.Events,
-			costCell(l))
+			costCell(l)); err != nil {
+			return err
+		}
 		tot.Input += l.Input
 		tot.Output += l.Output
 		tot.CacheRead += l.CacheRead
@@ -218,15 +228,19 @@ func Render(w io.Writer, lines []Line, o Options, unpriced []string) error {
 		tot.Cost += l.Cost
 		tot.UnpricedEvents += l.UnpricedEvents
 	}
-	fmt.Fprintf(tw, "TOTAL\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
+	if _, err := fmt.Fprintf(tw, "TOTAL\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
 		Humanize(tot.Input), Humanize(tot.Output), Humanize(tot.CacheRead),
 		Humanize(tot.CacheWrite), Humanize(tot.Reasoning), Humanize(tot.Total), tot.Events,
-		costCell(tot))
+		costCell(tot)); err != nil {
+		return err
+	}
 	if err := tw.Flush(); err != nil {
 		return err
 	}
 	if len(unpriced) > 0 {
-		fmt.Fprintf(w, "  %s\n", c(yellow, "* unpriced: "+strings.Join(unpriced, ", ")))
+		if _, err := fmt.Fprintf(w, "  %s\n", c(yellow, "* unpriced: "+strings.Join(unpriced, ", "))); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -351,15 +365,21 @@ func BuildSessions(st *store.Store, o Options, prices *pricing.Table) ([]Session
 		switch {
 		case r.HasRawCost:
 			sl.Cost += r.RawCost
-			priced = true
+			priced = r.EstEvents == 0
+			if r.EstEvents > 0 && prices != nil {
+				if usd, ok := prices.Cost(r.Model, r.EstInput, r.EstOutput, r.EstCacheRead, r.EstCacheWrite, r.EstReasoning); ok {
+					sl.Cost += usd
+					priced = true
+				}
+			}
 		case prices != nil:
-			if usd, ok := prices.Cost(r.Model, r.Input, r.Output, r.CacheRead, r.CacheWrite); ok {
+			if usd, ok := prices.Cost(r.Model, r.EstInput, r.EstOutput, r.EstCacheRead, r.EstCacheWrite, r.EstReasoning); ok {
 				sl.Cost += usd
 				priced = true
 			}
 		}
 		if !priced {
-			sl.UnpricedEvents += r.Events
+			sl.UnpricedEvents += r.EstEvents
 			unpriced[r.Source] = true
 		}
 	}
@@ -391,11 +411,13 @@ func RenderSessions(w io.Writer, sessions []SessionLine, o Options, unpriced []s
 		return enc.Encode(sessions)
 	}
 	if len(sessions) == 0 {
-		fmt.Fprintln(w, "  "+c(dim, "no sessions found"))
-		return nil
+		_, err := fmt.Fprintln(w, "  "+c(dim, "no sessions found"))
+		return err
 	}
 	tw := tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
-	fmt.Fprintf(tw, "SESSION\tSOURCE\tTOKENS\tCOST\tEVENTS\tMODELS\tDURATION\tPROJECT\n")
+	if _, err := fmt.Fprintf(tw, "SESSION\tSOURCE\tTOKENS\tCOST\tEVENTS\tMODELS\tDURATION\tPROJECT\n"); err != nil {
+		return err
+	}
 	var totalCost float64
 	var totalTokens int64
 	var totalEvents int64
@@ -409,21 +431,27 @@ func RenderSessions(w io.Writer, sessions []SessionLine, o Options, unpriced []s
 
 		costStr := CostCell(Line{Cost: s.Cost, UnpricedEvents: s.UnpricedEvents})
 
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\n",
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\n",
 			s.TruncID, s.Source, Humanize(s.Total), costStr,
-			s.Events, s.Models, dur, proj)
+			s.Events, s.Models, dur, proj); err != nil {
+			return err
+		}
 		totalCost += s.Cost
 		totalTokens += s.Total
 		totalEvents += s.Events
 		totalUnpriced += s.UnpricedEvents
 	}
-	fmt.Fprintf(tw, "TOTAL\t\t%s\t%s\t%d\t\t\t\n",
-		Humanize(totalTokens), CostCell(Line{Cost: totalCost, UnpricedEvents: totalUnpriced}), totalEvents)
+	if _, err := fmt.Fprintf(tw, "TOTAL\t\t%s\t%s\t%d\t\t\t\n",
+		Humanize(totalTokens), CostCell(Line{Cost: totalCost, UnpricedEvents: totalUnpriced}), totalEvents); err != nil {
+		return err
+	}
 	if err := tw.Flush(); err != nil {
 		return err
 	}
 	if len(unpriced) > 0 {
-		fmt.Fprintf(w, "  %s\n", c(yellow, "* unpriced: "+strings.Join(unpriced, ", ")))
+		if _, err := fmt.Fprintf(w, "  %s\n", c(yellow, "* unpriced: "+strings.Join(unpriced, ", "))); err != nil {
+			return err
+		}
 	}
 	return nil
 }

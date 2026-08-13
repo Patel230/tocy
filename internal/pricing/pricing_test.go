@@ -62,7 +62,7 @@ func TestMissNeverZeroDollar(t *testing.T) {
 	if _, ok := tb.Match("totally-made-up-model-xyz"); ok {
 		t.Error("nonsense model matched; matcher too loose")
 	}
-	if usd, ok := tb.Cost("totally-made-up-model-xyz", 1000, 1000, 0, 0); ok || usd != 0 {
+	if usd, ok := tb.Cost("totally-made-up-model-xyz", 1000, 1000, 0, 0, 0); ok || usd != 0 {
 		t.Errorf("Cost on miss = (%v, %v), want (0, false)", usd, ok)
 	}
 	if _, ok := tb.Match(""); ok {
@@ -81,13 +81,27 @@ func TestCostArithmetic(t *testing.T) {
 		norm: map[string]string{"m": "m"},
 		memo: map[string]string{},
 	}
-	usd, ok := tb.Cost("m", 1_000_000, 500_000, 2_000_000, 100_000)
+	usd, ok := tb.Cost("m", 1_000_000, 500_000, 2_000_000, 100_000, 0)
 	if !ok {
 		t.Fatal("expected hit")
 	}
 	want := 1.0 + 1.0 + 0.2 + 0.05
 	if diff := usd - want; diff > 1e-9 || diff < -1e-9 {
 		t.Errorf("Cost = %v, want %v", usd, want)
+	}
+}
+
+func TestReasoningCost(t *testing.T) {
+	tb := &Table{
+		prices: map[string]ModelPrice{"m": {
+			OutputCostPerToken:          2e-6,
+			OutputCostPerReasoningToken: 5e-6,
+		}},
+		norm: map[string]string{"m": "m"}, memo: map[string]string{},
+	}
+	usd, ok := tb.Cost("m", 0, 100, 0, 0, 20)
+	if !ok || usd != 0.0003 {
+		t.Fatalf("reasoning cost = (%v, %v), want (0.0003, true)", usd, ok)
 	}
 }
 
@@ -118,7 +132,7 @@ func TestMatchConcurrent(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < 200; i++ {
 				tb.Match(models[i%len(models)])
-				tb.Cost(models[i%len(models)], 100, 100, 0, 0)
+				tb.Cost(models[i%len(models)], 100, 100, 0, 0, 0)
 			}
 		}()
 	}

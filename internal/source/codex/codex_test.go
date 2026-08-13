@@ -63,7 +63,9 @@ func TestParseAndResume(t *testing.T) {
 	if _, err := f.WriteString(fixtureTail); err != nil {
 		t.Fatal(err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	got2, st2 := parseAll(t, s, path, st1)
 	if len(got2) != 1 {

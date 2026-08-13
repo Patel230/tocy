@@ -26,6 +26,7 @@ type ModelPrice struct {
 	OutputCostPerToken          float64 `json:"output_cost_per_token"`
 	CacheReadInputTokenCost     float64 `json:"cache_read_input_token_cost"`
 	CacheCreationInputTokenCost float64 `json:"cache_creation_input_token_cost"`
+	OutputCostPerReasoningToken float64 `json:"output_cost_per_reasoning_token"`
 }
 
 type Table struct {
@@ -65,8 +66,12 @@ func Load(force bool) *Table {
 
 	if body, err := fetch(); err == nil {
 		if t := parse(body); t != nil {
-			_ = os.MkdirAll(filepath.Dir(path), 0o755)
-			_ = os.WriteFile(path, body, 0o644)
+			_ = os.MkdirAll(filepath.Dir(path), 0o700)
+			if filepath.Base(filepath.Dir(path)) == ".tocy" {
+				_ = os.Chmod(filepath.Dir(path), 0o700)
+			}
+			_ = os.WriteFile(path, body, 0o600)
+			_ = os.Chmod(path, 0o600)
 			t.Source = "network"
 			t.FetchedAt = time.Now()
 			return t
@@ -115,7 +120,7 @@ func fetch() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, &httpError{resp.StatusCode}
 	}
@@ -232,13 +237,18 @@ func (t *Table) resolve(model string) string {
 	return ""
 }
 
-func (t *Table) Cost(model string, input, output, cacheRead, cacheWrite int64) (usd float64, ok bool) {
+func (t *Table) Cost(model string, input, output, cacheRead, cacheWrite, reasoning int64) (usd float64, ok bool) {
 	p, ok := t.Match(model)
 	if !ok {
 		return 0, false
 	}
+	reasoningRate := p.OutputCostPerReasoningToken
+	if reasoningRate == 0 {
+		reasoningRate = p.OutputCostPerToken
+	}
 	return float64(input)*p.InputCostPerToken +
 		float64(output)*p.OutputCostPerToken +
 		float64(cacheRead)*p.CacheReadInputTokenCost +
-		float64(cacheWrite)*p.CacheCreationInputTokenCost, true
+		float64(cacheWrite)*p.CacheCreationInputTokenCost +
+		float64(reasoning)*reasoningRate, true
 }

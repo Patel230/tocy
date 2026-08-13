@@ -2,11 +2,11 @@ package main
 
 import (
 	"fmt"
+	"html/template"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"text/template"
 )
 
 const launchAgentLabel = "com.tocy.watch"
@@ -61,7 +61,7 @@ func installLaunchAgent(interval string) error {
 		return err
 	}
 	tocyDir := filepath.Join(home, ".tocy")
-	if err := os.MkdirAll(tocyDir, 0o755); err != nil {
+	if err := os.MkdirAll(tocyDir, 0o700); err != nil {
 		return err
 	}
 
@@ -69,7 +69,7 @@ func installLaunchAgent(interval string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 
@@ -85,10 +85,13 @@ func installLaunchAgent(interval string) error {
 		LogPath:  filepath.Join(tocyDir, "watch.log"),
 	}
 	if err := tmpl.Execute(f, data); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
 		return err
 	}
 

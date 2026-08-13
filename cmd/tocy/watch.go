@@ -80,7 +80,7 @@ func runWatch(ctx context.Context, st *store.Store, srcs []source.Source, interv
 			color(ansiDim, "file watcher unavailable ("+err.Error()+"); polling only"))
 		return pollLoop(ctx, st, srcs, interval, detected)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 	for _, root := range watchRoots(srcs) {
 		addRecursive(w, root)
 	}

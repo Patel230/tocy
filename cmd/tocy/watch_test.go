@@ -60,7 +60,7 @@ func openTestStore(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
-	t.Cleanup(func() { st.Close() })
+	t.Cleanup(func() { _ = st.Close() })
 	return st
 }
 
@@ -121,7 +121,7 @@ func TestAddRecursive(t *testing.T) {
 	if err != nil {
 		t.Skipf("fsnotify unavailable: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 	addRecursive(w, root)
 
 	got := w.WatchList()

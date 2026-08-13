@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"time"
@@ -69,7 +70,7 @@ func TailLines(path string, offset int64, fn func(line []byte)) (int64, error) {
 	if err != nil {
 		return offset, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if offset > 0 {
 		if _, err := f.Seek(offset, io.SeekStart); err != nil {
 			return offset, err
@@ -81,12 +82,16 @@ func TailLines(path string, offset int64, fn func(line []byte)) (int64, error) {
 		line, err := r.ReadBytes('\n')
 		if err == nil {
 			pos += int64(len(line))
-			if len(line) <= MaxLine {
-				fn(line)
+			if len(line) > MaxLine {
+				return offset, fmt.Errorf("line exceeds maximum size of %d bytes", MaxLine)
 			}
+			fn(line)
 			continue
 		}
 		if err == io.EOF {
+			if len(line) > MaxLine {
+				return offset, fmt.Errorf("line exceeds maximum size of %d bytes", MaxLine)
+			}
 			// Leftover partial line: consume only if a complete JSON object.
 			if t := bytes.TrimSpace(line); len(t) > 0 && t[0] == '{' &&
 				len(line) <= MaxLine && json.Valid(line) {
