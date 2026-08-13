@@ -32,6 +32,7 @@ type Line struct {
 
 type Options struct {
 	Since   time.Time
+	Until   time.Time
 	GroupBy string
 	Source  string
 	JSON    bool
@@ -86,8 +87,35 @@ func ParseSince(s string, now time.Time) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("bad --since %q (want all|today|7d|24h|2w|1m|YYYY-MM-DD)", s)
 }
 
+// ParseUntil parses an end-date specifier. The returned time is exclusive:
+// events at or after it are excluded. Supports the same relative formats as
+// ParseSince, plus explicit dates.
+func ParseUntil(s string, now time.Time) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, nil
+	}
+	if m := sinceRe.FindStringSubmatch(s); m != nil {
+		n, _ := strconv.Atoi(m[1])
+		switch m[2] {
+		case "h":
+			return now.Add(-time.Duration(n) * time.Hour), nil
+		case "d":
+			return now.AddDate(0, 0, -n), nil
+		case "w":
+			return now.AddDate(0, 0, -7*n), nil
+		case "m":
+			return now.AddDate(0, -n, 0), nil
+		}
+	}
+	if t, err := time.ParseInLocation("2006-01-02", s, now.Location()); err == nil {
+		// Make exclusive: include the entire day.
+		return t.AddDate(0, 0, 1), nil
+	}
+	return time.Time{}, fmt.Errorf("bad --until %q (want 7d|24h|2w|1m|YYYY-MM-DD)", s)
+}
+
 func Build(st *store.Store, o Options, prices *pricing.Table) ([]Line, []string, error) {
-	rows, err := st.Aggregate(store.AggOpts{Since: o.Since, GroupBy: o.GroupBy, Source: o.Source})
+	rows, err := st.Aggregate(store.AggOpts{Since: o.Since, Until: o.Until, GroupBy: o.GroupBy, Source: o.Source})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -322,7 +350,7 @@ func Humanize(n int64) string {
 }
 
 func BuildSessions(st *store.Store, o Options, prices *pricing.Table) ([]SessionLine, []string, error) {
-	rows, err := st.Sessions(store.AggOpts{Since: o.Since, Source: o.Source})
+	rows, err := st.Sessions(store.AggOpts{Since: o.Since, Until: o.Until, Source: o.Source})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -380,7 +408,7 @@ func BuildSessions(st *store.Store, o Options, prices *pricing.Table) ([]Session
 		}
 		if !priced {
 			sl.UnpricedEvents += r.EstEvents
-			unpriced[r.Source] = true
+			unpriced[r.Model] = true
 		}
 	}
 

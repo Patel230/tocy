@@ -37,6 +37,8 @@ func (f *fakeSrc) ScanTargets() ([]string, error) {
 	return filepath.Glob(filepath.Join(f.root, "*.log"))
 }
 
+func (f *fakeSrc) AlwaysScan() bool { return false }
+
 func (f *fakeSrc) Parse(path string, st *source.FileState, emit func(source.UsageEvent)) (source.FileState, error) {
 	line := 0
 	off, err := source.TailLines(path, st.Offset, func([]byte) {

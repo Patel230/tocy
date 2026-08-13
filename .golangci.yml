@@ -1,0 +1,21 @@
+run:
+  timeout: 2m
+  go: "1.26"
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - goimports
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+    exclude-functions:
+      # Closed via defer — errors are intentionally ignored.
+      - (io.Closer).Close
+      - (net/http).Response.Body.Close

@@ -3,7 +3,7 @@ package opencode
 import (
 	"database/sql"
 	"encoding/json"
-	"net/url"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -15,10 +15,6 @@ import (
 
 const name = "opencode"
 const abandonAfter = 24 * time.Hour
-
-func sqliteDSN(path, query string) string {
-	return (&url.URL{Scheme: "file", Path: path, RawQuery: query}).String()
-}
 
 type Src struct{ dbPath string }
 
@@ -106,7 +102,7 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 		return ns, nil
 	}
 
-	db, err := sql.Open("sqlite", sqliteDSN(path, "mode=ro&_pragma=busy_timeout(2000)"))
+	db, err := sql.Open("sqlite", source.SQLiteDSN(path, "mode=ro"))
 	if err != nil {
 		return ns, err
 	}
@@ -186,8 +182,10 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 		CursorMS: next, Pinned: pinned > 0,
 		DBSize: dbSize, DBMtimeNS: dbMt, WalSize: walSize, WalMtimeNS: walMt,
 	}
-	if b, merr := json.Marshal(nc); merr == nil {
-		ns.State = string(b)
+	b, merr := json.Marshal(nc)
+	if merr != nil {
+		return ns, fmt.Errorf("marshal parser state: %w", merr)
 	}
+	ns.State = string(b)
 	return ns, nil
 }

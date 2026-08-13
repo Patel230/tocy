@@ -26,7 +26,7 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
-	"net/url"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,10 +46,6 @@ type Src struct {
 	// every db's gen_metadata covers every id its steps reference. Parse
 	// is called sequentially per source, so no locking is needed.
 	names map[uint64]string
-}
-
-func sqliteDSN(path, query string) string {
-	return (&url.URL{Scheme: "file", Path: path, RawQuery: query}).String()
 }
 
 func New() *Src {
@@ -109,7 +105,7 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 		return ns, nil
 	}
 
-	db, err := sql.Open("sqlite", sqliteDSN(path, "mode=ro&_pragma=busy_timeout(2000)"))
+	db, err := sql.Open("sqlite", source.SQLiteDSN(path, "mode=ro"))
 	if err != nil {
 		return ns, err
 	}
@@ -175,9 +171,11 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 		LastIdx: maxIdx,
 		DBSize:  dbSize, DBMtimeNS: dbMt, WalSize: walSize, WalMtimeNS: walMt,
 	}
-	if b, merr := json.Marshal(nc); merr == nil {
-		ns.State = string(b)
+	b, merr := json.Marshal(nc)
+	if merr != nil {
+		return ns, fmt.Errorf("marshal parser state: %w", merr)
 	}
+	ns.State = string(b)
 	return ns, nil
 }
 

@@ -25,15 +25,6 @@ func Sources() []source.Source {
 	}
 }
 
-type alwaysScanner interface {
-	AlwaysScan() bool
-}
-
-func alwaysScan(src source.Source) bool {
-	a, ok := src.(alwaysScanner)
-	return ok && a.AlwaysScan()
-}
-
 // FileDetail records the outcome for one scanned file.
 type FileDetail struct {
 	Path      string
@@ -99,7 +90,7 @@ func scanSource(st *store.Store, src source.Source) (files, newEvents int, detai
 		}
 		if prev == nil {
 			prev = &source.FileState{Path: path, Source: src.Name()}
-		} else if prev.Size == size && prev.Mtime == mtime && prev.Inode == ino && !alwaysScan(src) {
+		} else if prev.Size == size && prev.Mtime == mtime && prev.Inode == ino && !src.AlwaysScan() {
 			continue
 		}
 		if size < prev.Offset || (prev.Inode != 0 && ino != 0 && prev.Inode != ino) {

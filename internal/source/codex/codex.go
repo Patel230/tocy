@@ -3,6 +3,7 @@ package codex
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,6 +33,8 @@ func (s *Src) Detect() (bool, string) {
 func (s *Src) ScanTargets() ([]string, error) {
 	return filepath.Glob(filepath.Join(s.root, "*", "*", "*", "*.jsonl"))
 }
+
+func (s *Src) AlwaysScan() bool { return false }
 
 type totals struct {
 	Input     int64 `json:"input_tokens"`
@@ -154,9 +157,11 @@ func (s *Src) Parse(path string, st *source.FileState, emit func(source.UsageEve
 
 	ns := *st
 	ns.Offset = newOff
-	if b, merr := json.Marshal(meta); merr == nil {
-		ns.State = string(b)
+	b, merr := json.Marshal(meta)
+	if merr != nil {
+		return ns, fmt.Errorf("marshal parser state: %w", merr)
 	}
+	ns.State = string(b)
 	return ns, err
 }
 

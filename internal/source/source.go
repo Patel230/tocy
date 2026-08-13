@@ -8,9 +8,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"time"
 )
+
+// SQLiteDSN builds a file: DSN that safely escapes paths containing characters
+// like '?' or '#' that would otherwise be misinterpreted as query fragments.
+func SQLiteDSN(path, query string) string {
+	return (&url.URL{Scheme: "file", Path: path, RawQuery: query}).String()
+}
 
 // UsageEvent is one normalized token-usage record from any tool.
 type UsageEvent struct {
@@ -55,6 +62,10 @@ type Source interface {
 	// Parse reads path starting at st.Offset, emitting events, and returns
 	// the updated state (offset advanced past fully-parsed lines).
 	Parse(path string, st *FileState, emit func(UsageEvent)) (FileState, error)
+	// AlwaysScan reports whether the source must be parsed on every scan
+	// regardless of file mtime (e.g. SQLite sources whose WAL commits don't
+	// touch the main file's mtime). The default is false.
+	AlwaysScan() bool
 }
 
 // MaxLine is the largest JSONL line we accept (10 MB).

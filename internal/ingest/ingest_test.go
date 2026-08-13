@@ -90,6 +90,7 @@ type flakySource struct {
 func (f *flakySource) Name() string                   { return "flaky" }
 func (f *flakySource) Detect() (bool, string)         { return true, "" }
 func (f *flakySource) ScanTargets() ([]string, error) { return f.files, nil }
+func (f *flakySource) AlwaysScan() bool               { return false }
 
 func (f *flakySource) Parse(path string, st *source.FileState, emit func(source.UsageEvent)) (source.FileState, error) {
 	if path == f.bad {

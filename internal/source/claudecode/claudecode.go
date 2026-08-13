@@ -32,6 +32,8 @@ func (s *Src) ScanTargets() ([]string, error) {
 	return filepath.Glob(filepath.Join(s.root, "*", "*.jsonl"))
 }
 
+func (s *Src) AlwaysScan() bool { return false }
+
 type lineRec struct {
 	Type      string `json:"type"`
 	UUID      string `json:"uuid"`

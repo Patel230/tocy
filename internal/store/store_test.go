@@ -36,8 +36,8 @@ func TestMigrateVersionAndReopen(t *testing.T) {
 	if err := s.DB.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
 		t.Fatalf("user_version: %v", err)
 	}
-	if v != 2 {
-		t.Fatalf("user_version = %d, want 2", v)
+	if v != 3 {
+		t.Fatalf("user_version = %d, want 3", v)
 	}
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
@@ -52,8 +52,8 @@ func TestMigrateVersionAndReopen(t *testing.T) {
 	if err := s2.DB.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
 		t.Fatalf("user_version: %v", err)
 	}
-	if v != 2 {
-		t.Fatalf("user_version after reopen = %d, want 2", v)
+	if v != 3 {
+		t.Fatalf("user_version after reopen = %d, want 3", v)
 	}
 	var n int
 	if err := s2.DB.QueryRow(
@@ -62,6 +62,13 @@ func TestMigrateVersionAndReopen(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatal("ix_session index missing after migration")
+	}
+	if err := s2.DB.QueryRow(
+		"SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='ix_project_ts'").Scan(&n); err != nil {
+		t.Fatalf("index check: %v", err)
+	}
+	if n != 1 {
+		t.Fatal("ix_project_ts index missing after migration")
 	}
 }
 

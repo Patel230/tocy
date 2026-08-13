@@ -42,11 +42,13 @@ Usage:
       --verbose                  show per-file scan details
   tocy report                    print usage table
       --since                    all|today|7d|24h|2w|1m|YYYY-MM-DD (default all)
+      --until                    end of window (exclusive): 7d|2w|1m|YYYY-MM-DD
       --by                       tool|model|day|project|session (default tool)
       --json                     machine-readable output
       --tool <name>              filter to one tool
   tocy sessions                  list recent sessions with cost
       --since                    time window (default today)
+      --until                    end of window (exclusive): 7d|2w|1m|YYYY-MM-DD
       --json                     machine-readable output
   tocy tools                     list detected tools and ingest status
   tocy statusline                compact one-line cost summary for today
@@ -183,11 +185,17 @@ func cmdWatch(args []string) error {
 func cmdSessions(args []string) error {
 	fs := flag.NewFlagSet("sessions", flag.ExitOnError)
 	since := fs.String("since", "today", "time window")
+	until := fs.String("until", "", "end of time window (exclusive)")
 	jsonOut := fs.Bool("json", false, "JSON output")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	sinceT, err := report.ParseSince(*since, time.Now())
+	now := time.Now()
+	sinceT, err := report.ParseSince(*since, now)
+	if err != nil {
+		return err
+	}
+	untilT, err := report.ParseUntil(*until, now)
 	if err != nil {
 		return err
 	}
@@ -196,7 +204,7 @@ func cmdSessions(args []string) error {
 		return err
 	}
 	defer func() { _ = st.Close() }()
-	sessions, unpriced, err := report.BuildSessions(st, report.Options{Since: sinceT}, pricing.Load(false))
+	sessions, unpriced, err := report.BuildSessions(st, report.Options{Since: sinceT, Until: untilT}, pricing.Load(false))
 	if err != nil {
 		return err
 	}
@@ -249,7 +257,9 @@ func cmdPrune(args []string) error {
 	fmt.Printf("  %s %s %s\n", color(ansiGreen, "✓"), color(ansiBold, fmt.Sprintf("%d event(s) pruned", n)),
 		color(ansiDim, fmt.Sprintf("(kept %s → today)", before.Format("2006-01-02"))))
 	if n > 0 {
-		if _, err := st.DB.Exec("VACUUM"); err != nil {
+		// incremental_vacuum reclaims space without rewriting the whole file,
+		// which can block for seconds on a large database.
+		if _, err := st.DB.Exec("PRAGMA incremental_vacuum(100)"); err != nil {
 			return fmt.Errorf("prune succeeded but vacuum failed: %w", err)
 		}
 	}
@@ -272,6 +282,7 @@ func cmdHelp(args []string) error {
 		fmt.Println()
 		fmt.Println("  " + color(ansiBold, "tocy report") + " " + color(ansiDim, "[flags]"))
 		fmt.Println("      " + color(ansiDim, "--since all|today|7d|24h|2w|1m|YYYY-MM-DD  (default all)"))
+		fmt.Println("      " + color(ansiDim, "--until 7d|2w|1m|YYYY-MM-DD                end of window (exclusive)"))
 		fmt.Println("      " + color(ansiDim, "--by tool|model|day|project|session      (default tool)"))
 		fmt.Println("      " + color(ansiDim, "--json                                   machine-readable output"))
 		fmt.Println("      " + color(ansiDim, "--tool <name>                            filter to one tool"))
@@ -280,6 +291,7 @@ func cmdHelp(args []string) error {
 		fmt.Println()
 		fmt.Println("  " + color(ansiBold, "tocy sessions") + " " + color(ansiDim, "[flags]"))
 		fmt.Println("      " + color(ansiDim, "--since all|today|7d|24h|2w|1m|YYYY-MM-DD  (default today)"))
+		fmt.Println("      " + color(ansiDim, "--until 7d|2w|1m|YYYY-MM-DD                end of window (exclusive)"))
 		fmt.Println("      " + color(ansiDim, "--json                                   machine-readable output"))
 	case "tools":
 		fmt.Println(color(ansiBold+ansiPurple, "tocy tools") + " — " + color(ansiDim, "list detected tools and ingest status"))
@@ -314,13 +326,19 @@ func cmdHelp(args []string) error {
 func cmdReport(args []string) error {
 	fs := flag.NewFlagSet("report", flag.ExitOnError)
 	since := fs.String("since", "all", "time window")
+	until := fs.String("until", "", "end of time window (exclusive)")
 	by := fs.String("by", "tool", "group by: tool|model|day|project")
 	jsonOut := fs.Bool("json", false, "JSON output")
 	tool := fs.String("tool", "", "filter to one tool, e.g. claude-code")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	sinceT, err := report.ParseSince(*since, time.Now())
+	now := time.Now()
+	sinceT, err := report.ParseSince(*since, now)
+	if err != nil {
+		return err
+	}
+	untilT, err := report.ParseUntil(*until, now)
 	if err != nil {
 		return err
 	}
@@ -329,7 +347,7 @@ func cmdReport(args []string) error {
 		return err
 	}
 	defer func() { _ = st.Close() }()
-	o := report.Options{Since: sinceT, GroupBy: *by, Source: *tool, JSON: *jsonOut}
+	o := report.Options{Since: sinceT, Until: untilT, GroupBy: *by, Source: *tool, JSON: *jsonOut}
 	lines, unpriced, err := report.Build(st, o, pricing.Load(false))
 	if err != nil {
 		return err

@@ -165,19 +165,40 @@ func load(st *store.Store, prices *pricing.Table, since time.Time, tool string) 
 	if vd.byModel, vd.unpriced, err = build("model", since); err != nil {
 		return nil, err
 	}
-	if vd.byDay, _, err = build("day", since); err != nil {
-		return nil, err
-	}
 	if vd.byProject, _, err = build("project", since); err != nil {
 		return nil, err
 	}
 
-	tl, _, err := build("day", now.AddDate(0, 0, -(trendDays-1)))
+	// A single byDay query from the earliest date needed serves the daily
+	// tab, the 30-day trend, the streak heatmap, and the four summary cards
+	// (each just sums the days falling in its window). Without this, load()
+	// fires off eight full-table scans where two will do.
+	dayFrom := since
+	if dayFrom.IsZero() {
+		dayFrom = now.AddDate(0, 0, -(streakWeeks*7 - 1))
+	}
+	earliest, _ := st.EarliestEvent()
+	if !earliest.IsZero() && !earliest.After(now) && earliest.Before(dayFrom) {
+		dayFrom = earliest
+	}
+
+	dl, _, err := build("day", dayFrom)
 	if err != nil {
 		return nil, err
 	}
+	if since.IsZero() {
+		vd.byDay = dl
+	} else {
+		cutoff := since.Format("2006-01-02")
+		for _, l := range dl {
+			if l.Key >= cutoff {
+				vd.byDay = append(vd.byDay, l)
+			}
+		}
+	}
+
 	byDate := map[string]int64{}
-	for _, l := range tl {
+	for _, l := range dl {
 		byDate[l.Key] = l.Total
 	}
 	vd.trend = make([]int64, trendDays)
@@ -186,40 +207,29 @@ func load(st *store.Store, prices *pricing.Table, since time.Time, tool string) 
 		vd.trend[i] = byDate[d]
 	}
 
-	earliest, _ := st.EarliestEvent()
-	if earliest.IsZero() || earliest.After(now) {
-		earliest = now.AddDate(0, 0, -(streakWeeks*7 - 1))
-	}
 	windowStart := now.AddDate(0, 0, -(streakWeeks*7 - 1))
-	if earliest.Before(windowStart) {
-		earliest = windowStart
+	if dayFrom.After(windowStart) {
+		vd.streakStart = dayFrom
+	} else {
+		vd.streakStart = windowStart
 	}
-	vd.streakStart = earliest
-	streakDays := int(now.Sub(earliest).Hours()/24) + 1
-	sl, _, err := build("day", earliest)
-	if err != nil {
-		return nil, err
-	}
-	sd := map[string]int64{}
-	for _, l := range sl {
-		sd[l.Key] = l.Total
-	}
+	streakDays := int(now.Sub(vd.streakStart).Hours()/24) + 1
 	vd.streakData = make([]int64, streakDays)
 	for i := 0; i < streakDays; i++ {
-		d := earliest.AddDate(0, 0, i).Format("2006-01-02")
-		vd.streakData[i] = sd[d]
+		d := vd.streakStart.AddDate(0, 0, i).Format("2006-01-02")
+		vd.streakData[i] = byDate[d]
 	}
 
 	for i, rg := range ranges {
-		lines, _, err := build("tool", rg.since(now))
-		if err != nil {
-			return nil, err
-		}
+		cStart := rg.since(now)
 		var c cardData
-		for _, l := range lines {
-			c.total += l.Total
-			c.cost += l.Cost
-			c.unpriced = c.unpriced || l.UnpricedEvents > 0
+		startKey := cStart.Format("2006-01-02")
+		for _, l := range dl {
+			if l.Key >= startKey {
+				c.total += l.Total
+				c.cost += l.Cost
+				c.unpriced = c.unpriced || l.UnpricedEvents > 0
+			}
 		}
 		vd.cards[i] = c
 	}

@@ -3,7 +3,6 @@ package store
 import (
 	"database/sql"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +23,7 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS ix_ts ON events(ts);
 CREATE INDEX IF NOT EXISTS ix_src_ts ON events(source, ts);
 CREATE INDEX IF NOT EXISTS ix_model_ts ON events(model, ts);
+CREATE INDEX IF NOT EXISTS ix_project_ts ON events(project, ts);
 CREATE TABLE IF NOT EXISTS ingest_files (
   path TEXT PRIMARY KEY, source TEXT NOT NULL,
   inode INTEGER, size INTEGER, mtime INTEGER, offset INTEGER DEFAULT 0,
@@ -51,7 +51,7 @@ func Open(path string) (*Store, error) {
 			return nil, err
 		}
 	}
-	dsn := sqliteDSN(path, "_pragma=journal_mode(WAL)&_pragma=busy_timeout(3000)&_pragma=synchronous(NORMAL)")
+	dsn := source.SQLiteDSN(path, "_pragma=journal_mode(WAL)&_pragma=busy_timeout(3000)&_pragma=synchronous(NORMAL)")
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -64,11 +64,6 @@ func Open(path string) (*Store, error) {
 	}
 	_ = os.Chmod(path, 0o600)
 	return s, nil
-}
-
-func sqliteDSN(path, query string) string {
-	u := &url.URL{Scheme: "file", Path: path, RawQuery: query}
-	return u.String()
 }
 
 func (s *Store) Close() error { return s.DB.Close() }
@@ -93,6 +88,16 @@ func (s *Store) migrate() error {
 			return err
 		}
 		if _, err := s.DB.Exec("PRAGMA user_version = 2"); err != nil {
+			return err
+		}
+	}
+	if v < 3 {
+		// GROUP BY project does a full table scan without this; the report
+		// and TUI project views are unusable on large datasets otherwise.
+		if _, err := s.DB.Exec("CREATE INDEX IF NOT EXISTS ix_project_ts ON events(project, ts)"); err != nil {
+			return err
+		}
+		if _, err := s.DB.Exec("PRAGMA user_version = 3"); err != nil {
 			return err
 		}
 	}
