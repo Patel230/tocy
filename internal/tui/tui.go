@@ -361,8 +361,10 @@ func buildInsights(vd *viewData) string {
 
 	var topTool string
 	var topTotal, totalAll int64
+	var totalCost float64
 	for _, l := range vd.byTool {
 		totalAll += l.Total
+		totalCost += l.Cost
 		if l.Total > topTotal {
 			topTotal = l.Total
 			topTool = l.Key
@@ -375,10 +377,18 @@ func buildInsights(vd *viewData) string {
 		parts = append(parts, fmt.Sprintf("%.0f%% from %s", float64(topTotal)/float64(totalAll)*100, topTool))
 	}
 	if vd.cards[1].cost > 0 {
-		parts = append(parts, fmt.Sprintf("7d cost %s", report.Money(vd.cards[1].cost)))
+		proj, _ := report.Projection(vd.cards[1].cost, vd.since)
+		parts = append(parts, fmt.Sprintf("7d %s ~%s/mo", report.Money(vd.cards[1].cost), proj))
+	}
+	if _, exceeded := report.BudgetWarn(totalCost, vd.since); exceeded {
+		parts = append(parts, fmt.Sprintf("%s ⚠ over budget", report.Money(totalCost)))
 	}
 	if len(vd.unpriced) > 0 {
 		parts = append(parts, fmt.Sprintf("%d unpriced model(s)", len(vd.unpriced)))
+	}
+	em := report.ComputeEfficiency(vd.byTool, nil)
+	if em.TotalTokens > 0 && em.CacheHitRate > 0.01 {
+		parts = append(parts, fmt.Sprintf("cache %.0f%%", em.CacheHitRate*100))
 	}
 	if len(parts) == 0 {
 		return ""

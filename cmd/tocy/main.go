@@ -51,6 +51,10 @@ Usage:
       --json                     machine-readable output
       --tool <name>              filter to one tool
   tocy tools                     list detected tools and ingest status
+  tocy compare                   compare two time periods
+      --since                    start of current period (default: 7d)
+      --prev                     previous period (default: 14d)
+      --by                       tool|model|day|project (default: tool)
   tocy statusline                compact one-line cost summary for today
   tocy watch                     keep ingesting (fsnotify + periodic rescan)
       --interval <dur>           fallback rescan interval (default 30s)
@@ -81,6 +85,8 @@ func main() {
 		err = cmdSessions(args)
 	case "tools":
 		err = cmdTools()
+	case "compare":
+		err = cmdCompare(args)
 	case "statusline":
 		err = cmdStatusline(args)
 	case "watch":
@@ -411,5 +417,39 @@ func cmdTools() error {
 func cmdDashboard() error {
 	return runWithStore(func(st *store.Store) error {
 		return tui.Run(st, pricing.Load(false))
+	})
+}
+
+func cmdCompare(args []string) error {
+	fs := flag.NewFlagSet("compare", flag.ExitOnError)
+	since := fs.String("since", "7d", "start of current period")
+	prev := fs.String("prev", "14d", "previous period start")
+	by := fs.String("by", "tool", "group by: tool|model|day|project")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	now := time.Now()
+	sinceT, err := report.ParseSince(*since, now)
+	if err != nil {
+		return err
+	}
+	prevT, err := report.ParseSince(*prev, now)
+	if err != nil {
+		return err
+	}
+	return runWithStore(func(st *store.Store) error {
+		cd, err := report.ComparePeriods(st, sinceT, prevT, *by, pricing.Load(false))
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%-12s %s  vs  %-12s %s\n", color(ansiBold, cd.Period), color(ansiGreen, report.Money(cd.Current)),
+			color(ansiBold, cd.PrevText), color(ansiBlue, report.Money(cd.Previous)))
+		fmt.Printf("Change: %+.1f%%\n", cd.Change)
+		if cd.Change > 20 {
+			fmt.Println(color(ansiRed, "⚠ significant increase"))
+		} else if cd.Change < -20 {
+			fmt.Println(color(ansiGreen, "✓ significant decrease"))
+		}
+		return nil
 	})
 }

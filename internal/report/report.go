@@ -612,3 +612,85 @@ func Projection(totalCost float64, since time.Time) (string, bool) {
 	monthly := totalCost / hours * 24 * 30
 	return fmt.Sprintf("~%s/mo", Money(monthly)), monthly > totalCost
 }
+
+// ComparisonData holds cost data for two periods side by side.
+type ComparisonData struct {
+	Current  float64
+	Previous float64
+	Change   float64 // percentage change
+	Period   string
+	PrevText string
+}
+
+// ComparePeriods returns comparison data between two time periods.
+func ComparePeriods(st *store.Store, currentSince, previousSince time.Time, groupBy string, prices *pricing.Table) (*ComparisonData, error) {
+	currentLines, _, err := Build(st, Options{Since: currentSince, GroupBy: groupBy}, prices)
+	if err != nil {
+		return nil, err
+	}
+	prevLines, _, err := Build(st, Options{Since: previousSince, GroupBy: groupBy}, prices)
+	if err != nil {
+		return nil, err
+	}
+	
+	var currentCost, prevCost float64
+	for _, l := range currentLines {
+		currentCost += l.Cost
+	}
+	for _, l := range prevLines {
+		prevCost += l.Cost
+	}
+	
+	change := 0.0
+	if prevCost > 0 {
+		change = (currentCost - prevCost) / prevCost * 100
+	}
+	
+	cd := &ComparisonData{
+		Current:  currentCost,
+		Previous: prevCost,
+		Change:   change,
+		Period:   formatPeriod(currentSince),
+		PrevText: formatPeriod(previousSince),
+	}
+	return cd, nil
+}
+
+func formatPeriod(t time.Time) string {
+	if t.IsZero() {
+		return "all-time"
+	}
+	return t.Format("2006-01-02")
+}
+
+// TokenEfficiency computes cost per token and cache efficiency metrics.
+type EfficiencyMetrics struct {
+	TotalTokens     int64
+	TotalCost       float64
+	CostPerMTokens  float64
+	CacheHitRate    float64
+	CacheSavings    float64
+}
+
+func ComputeEfficiency(lines []Line, prices *pricing.Table) *EfficiencyMetrics {
+	em := &EfficiencyMetrics{}
+	var totalCacheRead int64
+
+	for _, l := range lines {
+		em.TotalTokens += l.Total
+		em.TotalCost += l.Cost
+		totalCacheRead += l.CacheRead
+	}
+
+	em.CacheHitRate = 0
+	if em.TotalTokens > 0 {
+		em.CacheHitRate = float64(totalCacheRead) / float64(em.TotalTokens)
+	}
+	
+	// Estimate cost per million tokens
+	if em.TotalTokens > 0 {
+		em.CostPerMTokens = em.TotalCost / float64(em.TotalTokens) * 1e6
+	}
+	
+	return em
+}
