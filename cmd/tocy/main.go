@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -108,50 +107,59 @@ func openStore() (*store.Store, error) {
 	return store.Open(store.DefaultPath())
 }
 
+// runWithStore opens the store, runs f, and closes the store on return.
+// It replaces the repeated openStore / defer Close / error-check pattern
+// found throughout the command handlers.
+func runWithStore(f func(*store.Store) error) error {
+	st, err := openStore()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+	return f(st)
+}
+
 func cmdScan(args []string) error {
 	fs := flag.NewFlagSet("scan", flag.ExitOnError)
 	verbose := fs.Bool("verbose", false, "show per-file scan details")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	st, err := openStore()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = st.Close() }()
-	results := ingest.ScanAll(st, ingest.Sources())
-	had := false
-	for _, r := range results {
-		had = true
-		switch {
-		case r.Err != nil && r.Files == 0:
-			fmt.Printf("  %s %s\n", color(ansiRed, "✖"), color(ansiBold+ansiRed, r.Source)+"  "+color(ansiRed, r.Err.Error()))
-		case !r.Found:
-			fmt.Printf("  %s %s\n", color(ansiYellow, "•"), color(ansiBold, r.Source)+"  "+color(ansiDim, "not detected"))
-		default:
-			ev := fmt.Sprintf("+%d event(s)", r.NewEvents)
-			fi := fmt.Sprintf("%d file(s)", r.Files)
-			du := r.Duration.Round(time.Millisecond).String()
-			stat := fmt.Sprintf("%s  %s %s", color(ansiGreen, ev), color(ansiDim, fi), color(ansiDim, du))
-			fmt.Printf("  %s %s  %s\n", color(ansiGreen, "✓"), color(ansiBold, r.Source), stat)
-			if r.Err != nil {
-				fmt.Printf("    %s %s\n", color(ansiYellow, "⚠"), color(ansiYellow, "some files skipped: "+r.Err.Error()))
+	return runWithStore(func(st *store.Store) error {
+		results := ingest.ScanAll(st, ingest.Sources())
+		had := false
+		for _, r := range results {
+			had = true
+			switch {
+			case r.Err != nil && r.Files == 0:
+				fmt.Printf("  %s %s\n", color(ansiRed, "✖"), color(ansiBold+ansiRed, r.Source)+"  "+color(ansiRed, r.Err.Error()))
+			case !r.Found:
+				fmt.Printf("  %s %s\n", color(ansiYellow, "•"), color(ansiBold, r.Source)+"  "+color(ansiDim, "not detected"))
+			default:
+				ev := fmt.Sprintf("+%d event(s)", r.NewEvents)
+				fi := fmt.Sprintf("%d file(s)", r.Files)
+				du := r.Duration.Round(time.Millisecond).String()
+				stat := fmt.Sprintf("%s  %s %s", color(ansiGreen, ev), color(ansiDim, fi), color(ansiDim, du))
+				fmt.Printf("  %s %s  %s\n", color(ansiGreen, "✓"), color(ansiBold, r.Source), stat)
+				if r.Err != nil {
+					fmt.Printf("    %s %s\n", color(ansiYellow, "⚠"), color(ansiYellow, "some files skipped: "+r.Err.Error()))
+				}
 			}
-		}
-		if *verbose {
-			for _, d := range r.Details {
-				if d.Err != nil {
-					fmt.Printf("    %s %s  %s\n", color(ansiDim, "└─"), color(ansiDim, d.Path), color(ansiRed, d.Err.Error()))
-				} else {
-					fmt.Printf("    %s %s  %s\n", color(ansiDim, "└─"), color(ansiDim, d.Path), color(ansiGreen, fmt.Sprintf("+%d", d.NewEvents)))
+			if *verbose {
+				for _, d := range r.Details {
+					if d.Err != nil {
+						fmt.Printf("    %s %s  %s\n", color(ansiDim, "└─"), color(ansiDim, d.Path), color(ansiRed, d.Err.Error()))
+					} else {
+						fmt.Printf("    %s %s  %s\n", color(ansiDim, "└─"), color(ansiDim, d.Path), color(ansiGreen, fmt.Sprintf("+%d", d.NewEvents)))
+					}
 				}
 			}
 		}
-	}
-	if !had {
-		fmt.Println("  " + color(ansiDim, "no sources scanned"))
-	}
-	return nil
+		if !had {
+			fmt.Println("  " + color(ansiDim, "no sources scanned"))
+		}
+		return nil
+	})
 }
 
 func cmdWatch(args []string) error {
@@ -171,16 +179,12 @@ func cmdWatch(args []string) error {
 	if *install {
 		return installLaunchAgent(interval.String())
 	}
-	st, err := openStore()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = st.Close() }()
-
 	// Exit cleanly on SIGINT/SIGTERM so the deferred st.Close() runs.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return runWatch(ctx, st, ingest.Sources(), *interval)
+	return runWithStore(func(st *store.Store) error {
+		return runWatch(ctx, st, ingest.Sources(), *interval)
+	})
 }
 
 func cmdSessions(args []string) error {
@@ -215,17 +219,14 @@ func cmdSessions(args []string) error {
 }
 
 func cmdStatusline() error {
-	st, err := openStore()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = st.Close() }()
-	line, err := report.Statusline(st, pricing.Load(false))
-	if err != nil {
-		return err
-	}
-	fmt.Println(line)
-	return nil
+	return runWithStore(func(st *store.Store) error {
+		line, err := report.Statusline(st, pricing.Load(false))
+		if err != nil {
+			return err
+		}
+		fmt.Println(line)
+		return nil
+	})
 }
 
 func cmdPrune(args []string) error {
@@ -235,38 +236,29 @@ func cmdPrune(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	keepSet := false
-	for _, arg := range args {
-		if arg == "--keep" || strings.HasPrefix(arg, "--keep=") {
-			keepSet = true
-		}
-	}
-	if !keepSet || *keep < 1 {
+	if *keep < 1 {
 		return fmt.Errorf("--keep is required and must be >= 1")
 	}
 	if !*yes {
 		return fmt.Errorf("prune deletes data permanently; re-run with --yes to confirm")
 	}
 	before := time.Now().AddDate(0, 0, -*keep)
-	st, err := openStore()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = st.Close() }()
-	n, err := st.Prune(before)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("  %s %s %s\n", color(ansiGreen, "✓"), color(ansiBold, fmt.Sprintf("%d event(s) pruned", n)),
-		color(ansiDim, fmt.Sprintf("(kept %s → today)", before.Format("2006-01-02"))))
-	if n > 0 {
-		// incremental_vacuum reclaims space without rewriting the whole file,
-		// which can block for seconds on a large database.
-		if _, err := st.DB.Exec("PRAGMA incremental_vacuum(100)"); err != nil {
-			return fmt.Errorf("prune succeeded but vacuum failed: %w", err)
+	return runWithStore(func(st *store.Store) error {
+		n, err := st.Prune(before)
+		if err != nil {
+			return err
 		}
-	}
-	return nil
+		fmt.Printf("  %s %s %s\n", color(ansiGreen, "✓"), color(ansiBold, fmt.Sprintf("%d event(s) pruned", n)),
+			color(ansiDim, fmt.Sprintf("(kept %s → today)", before.Format("2006-01-02"))))
+		if n > 0 {
+			// incremental_vacuum reclaims space without rewriting the whole file,
+			// which can block for seconds on a large database.
+			if _, err := st.DB.Exec("PRAGMA incremental_vacuum(100)"); err != nil {
+				return fmt.Errorf("prune succeeded but vacuum failed: %w", err)
+			}
+		}
+		return nil
+	})
 }
 
 func cmdHelp(args []string) error {
@@ -346,17 +338,14 @@ func cmdReport(args []string) error {
 	if err != nil {
 		return err
 	}
-	st, err := openStore()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = st.Close() }()
-	o := report.Options{Since: sinceT, Until: untilT, GroupBy: *by, Source: *tool, JSON: *jsonOut}
-	lines, unpriced, err := report.Build(st, o, pricing.Load(false))
-	if err != nil {
-		return err
-	}
-	return report.Render(os.Stdout, lines, o, unpriced)
+	return runWithStore(func(st *store.Store) error {
+		o := report.Options{Since: sinceT, Until: untilT, GroupBy: *by, Source: *tool, JSON: *jsonOut}
+		lines, unpriced, err := report.Build(st, o, pricing.Load(false))
+		if err != nil {
+			return err
+		}
+		return report.Render(os.Stdout, lines, o, unpriced)
+	})
 }
 
 func cmdPricing(args []string) error {
@@ -405,10 +394,7 @@ func cmdTools() error {
 }
 
 func cmdDashboard() error {
-	st, err := openStore()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = st.Close() }()
-	return tui.Run(st, pricing.Load(false))
+	return runWithStore(func(st *store.Store) error {
+		return tui.Run(st, pricing.Load(false))
+	})
 }

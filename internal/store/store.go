@@ -73,35 +73,45 @@ func (s *Store) migrate() error {
 	if err := s.DB.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
 		return err
 	}
+	// Run all pending migrations inside a single transaction so a crash
+	// mid-migration leaves the database in a consistent, re-runnable state.
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // Rollback is a no-op if already committed.
 	if v < 1 {
-		if _, err := s.DB.Exec(schema); err != nil {
+		if _, err := tx.Exec(schema); err != nil {
 			return err
 		}
-		if _, err := s.DB.Exec("PRAGMA user_version = 1"); err != nil {
+		if _, err := tx.Exec("PRAGMA user_version = 1"); err != nil {
 			return err
 		}
+		v = 1
 	}
 	if v < 2 {
 		// Sessions() groups and filters on session_id; index it so the
 		// query stays fast as the events table grows.
-		if _, err := s.DB.Exec("CREATE INDEX IF NOT EXISTS ix_session ON events(session_id, source)"); err != nil {
+		if _, err := tx.Exec("CREATE INDEX IF NOT EXISTS ix_session ON events(session_id, source)"); err != nil {
 			return err
 		}
-		if _, err := s.DB.Exec("PRAGMA user_version = 2"); err != nil {
+		if _, err := tx.Exec("PRAGMA user_version = 2"); err != nil {
 			return err
 		}
+		v = 2
 	}
 	if v < 3 {
 		// GROUP BY project does a full table scan without this; the report
 		// and TUI project views are unusable on large datasets otherwise.
-		if _, err := s.DB.Exec("CREATE INDEX IF NOT EXISTS ix_project_ts ON events(project, ts)"); err != nil {
+		if _, err := tx.Exec("CREATE INDEX IF NOT EXISTS ix_project_ts ON events(project, ts)"); err != nil {
 			return err
 		}
-		if _, err := s.DB.Exec("PRAGMA user_version = 3"); err != nil {
+		if _, err := tx.Exec("PRAGMA user_version = 3"); err != nil {
 			return err
 		}
+		v = 3
 	}
-	return nil
+	return tx.Commit()
 }
 
 func (s *Store) InsertEvents(events []source.UsageEvent) (int, error) {

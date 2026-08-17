@@ -19,6 +19,9 @@ var snapshot []byte
 const (
 	URL      = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 	cacheTTL = 24 * time.Hour
+	// maxMemo caps the model-name resolution cache. The TUI can cycle through
+	// many models in a session; without a cap the map grows without bound.
+	maxMemo = 4096
 )
 
 type ModelPrice struct {
@@ -176,22 +179,31 @@ func normalize(name string) string {
 
 func candidates(model string) []string {
 	m := strings.TrimSpace(model)
-	out := []string{m, strings.ToLower(m)}
+	seen := map[string]bool{}
+	var out []string
+	add := func(s string) {
+		if s != "" && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	add(m)
+	add(strings.ToLower(m))
 	parts := strings.Split(m, "/")
 	for i := 1; i < len(parts); i++ {
-		out = append(out, strings.Join(parts[i:], "/"))
+		add(strings.Join(parts[i:], "/"))
 	}
 	if !strings.Contains(m, "/") {
 		for _, p := range []string{"anthropic/", "openai/", "gemini/", "vertex_ai/", "openrouter/"} {
-			out = append(out, p+m)
+			add(p + m)
 		}
 	}
 	if strings.Contains(m, ".") {
-		out = append(out, strings.ReplaceAll(m, ".", "-"))
+		add(strings.ReplaceAll(m, ".", "-"))
 	}
 	if strings.Contains(m, "-") {
 		if alt := dotAlt(m); alt != "" {
-			out = append(out, alt)
+			add(alt)
 		}
 	}
 	return out
@@ -214,7 +226,9 @@ func (t *Table) Match(model string) (ModelPrice, bool) {
 	key, seen := t.memo[model]
 	if !seen {
 		key = t.resolve(model)
-		t.memo[model] = key
+		if len(t.memo) < maxMemo {
+			t.memo[model] = key
+		}
 	}
 	t.mu.Unlock()
 	if key == "" {

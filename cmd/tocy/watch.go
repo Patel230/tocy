@@ -95,6 +95,9 @@ func runWatch(ctx context.Context, st *store.Store, srcs []source.Source, interv
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	// Debounce timer; drained until the first event arms it.
+	// We drain the channel explicitly because the timer may have already
+	// fired (e.g. if the goroutine is scheduled late) — ignoring the send
+	// here prevents a stale wake-up that would cause an immediate rescan.
 	timer := time.NewTimer(0)
 	if !timer.Stop() {
 		<-timer.C

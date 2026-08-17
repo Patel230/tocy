@@ -20,6 +20,8 @@ var palette = []lipgloss.Color{
 	"#F87171", // 7  red
 	"#818CF8", // 8  indigo
 	"#34D399", // 9  mint
+	"#E879F9", // 10 fuchsia
+	"#FACC15", // 11 yellow
 }
 
 var (
@@ -107,11 +109,14 @@ func trendChart(vals []int64, width int) []string {
 				e = 1
 			}
 			level := e - row*8
+			dayLabel := fmt.Sprintf("%dd ago", n-i)
+			clr := colorFor(dayLabel)
+			colSty := lipgloss.NewStyle().Foreground(clr)
 			switch {
 			case level >= 8:
-				bar.WriteString(barSty.Render("█"))
+				bar.WriteString(colSty.Render("█"))
 			case level > 0:
-				bar.WriteString(barSty.Render(string(vblocks[level-1])))
+				bar.WriteString(colSty.Render(string(vblocks[level-1])))
 			default:
 				bar.WriteString(dimSty.Render("·"))
 			}
@@ -172,13 +177,14 @@ func barList(lines []report.Line, width int, label func(report.Line) string) []s
 		clr := colorFor(lbl)
 		lc := lipgloss.NewStyle().Foreground(clr)
 		bar := hbar(frac, barW)
+		barCol := lipgloss.NewStyle().Foreground(clr)
 		cSty := costSty
 		if l.UnpricedEvents > 0 {
 			cSty = warnSty
 		}
 		out = append(out, fmt.Sprintf("%s %s%-*s %7s %9s",
 			lc.Render(fmt.Sprintf("%-*s", labelW, report.Truncate(lbl, labelW))),
-			lc.Render(bar), barW-len([]rune(bar)), "",
+			barCol.Render(bar), barW-len([]rune(bar)), "",
 			report.Humanize(l.Total), cSty.Render(report.CostCell(l))))
 	}
 	return out
@@ -196,8 +202,11 @@ func cardAt(title string, total int64, cost float64, unpriced bool, paletteIdx i
 		Padding(0, 1).
 		Width(width)
 	valSty := lipgloss.NewStyle().Bold(true).Foreground(bc)
+	costVal := lipgloss.NewStyle().Bold(true).Foreground(palette[(paletteIdx+3)%len(palette)]).Render(c)
 	body := fmt.Sprintf("%s\n%s\n%s",
-		dimSty.Render(title), valSty.Render(report.Humanize(total)+" tok"), costSty.Render(c))
+		dimSty.Render(title),
+		valSty.Render(report.Humanize(total)+" tok"),
+		costVal)
 	return sty.Render(body)
 }
 

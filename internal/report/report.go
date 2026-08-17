@@ -114,6 +114,45 @@ func ParseUntil(s string, now time.Time) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("bad --until %q (want 7d|24h|2w|1m|YYYY-MM-DD)", s)
 }
 
+// priceRow applies the source-actual-cost-wins pricing policy to a single
+// aggregation row, returning the cost delta, whether the row is fully priced,
+// and any models that could not be priced. It is shared by Build and
+// BuildSessions to avoid copy-pasting the same switch block.
+type priceCtx struct {
+	model       string
+	hasRawCost  bool
+	rawCost     float64
+	estEvents   int64
+	estInput    int64
+	estOutput   int64
+	estCacheRead int64
+	estCacheWrite int64
+	estReasoning int64
+}
+
+func priceRow(ctx priceCtx, prices *pricing.Table) (costDelta float64, priced bool, unpricedModels []string) {
+	switch {
+	case ctx.hasRawCost:
+		costDelta = ctx.rawCost
+		priced = ctx.estEvents == 0
+		if ctx.estEvents > 0 && prices != nil {
+			if usd, ok := prices.Cost(ctx.model, ctx.estInput, ctx.estOutput, ctx.estCacheRead, ctx.estCacheWrite, ctx.estReasoning); ok {
+				costDelta += usd
+				priced = true
+			}
+		}
+	case prices != nil:
+		if usd, ok := prices.Cost(ctx.model, ctx.estInput, ctx.estOutput, ctx.estCacheRead, ctx.estCacheWrite, ctx.estReasoning); ok {
+			costDelta = usd
+			priced = true
+		}
+	}
+	if !priced && ctx.estEvents > 0 {
+		unpricedModels = []string{ctx.model}
+	}
+	return costDelta, priced, unpricedModels
+}
+
 func Build(st *store.Store, o Options, prices *pricing.Table) ([]Line, []string, error) {
 	rows, err := st.Aggregate(store.AggOpts{Since: o.Since, Until: o.Until, GroupBy: o.GroupBy, Source: o.Source})
 	if err != nil {
@@ -137,28 +176,18 @@ func Build(st *store.Store, o Options, prices *pricing.Table) ([]Line, []string,
 		l.Events += r.Events
 		l.RawCost += r.RawCost
 
-		// Source-reported cost is ground truth (opencode records the actual
-		// charge); fall back to a pricing-table estimate otherwise.
-		var priced bool
-		switch {
-		case r.HasRawCost:
-			l.Cost += r.RawCost
-			priced = r.EstEvents == 0
-			if r.EstEvents > 0 && prices != nil {
-				if usd, ok := prices.Cost(r.Model, r.EstInput, r.EstOutput, r.EstCacheRead, r.EstCacheWrite, r.EstReasoning); ok {
-					l.Cost += usd
-					priced = true
-				}
-			}
-		case prices != nil:
-			if usd, ok := prices.Cost(r.Model, r.EstInput, r.EstOutput, r.EstCacheRead, r.EstCacheWrite, r.EstReasoning); ok {
-				l.Cost += usd
-				priced = true
-			}
+		pctx := priceCtx{
+			model: r.Model, hasRawCost: r.HasRawCost, rawCost: r.RawCost,
+			estEvents: r.EstEvents, estInput: r.EstInput, estOutput: r.EstOutput,
+			estCacheRead: r.EstCacheRead, estCacheWrite: r.EstCacheWrite, estReasoning: r.EstReasoning,
 		}
+		costDelta, priced, up := priceRow(pctx, prices)
+		l.Cost += costDelta
 		if !priced {
 			l.UnpricedEvents += r.EstEvents
-			unpriced[r.Model] = true
+			for _, m := range up {
+				unpriced[m] = true
+			}
 		}
 	}
 	out := make([]Line, 0, len(order))
@@ -382,27 +411,18 @@ func BuildSessions(st *store.Store, o Options, prices *pricing.Table) ([]Session
 		sl.Reasoning += r.Reasoning
 		sl.Events += r.Events
 
-		// Same priority as Build: actual source cost wins over an estimate.
-		var priced bool
-		switch {
-		case r.HasRawCost:
-			sl.Cost += r.RawCost
-			priced = r.EstEvents == 0
-			if r.EstEvents > 0 && prices != nil {
-				if usd, ok := prices.Cost(r.Model, r.EstInput, r.EstOutput, r.EstCacheRead, r.EstCacheWrite, r.EstReasoning); ok {
-					sl.Cost += usd
-					priced = true
-				}
-			}
-		case prices != nil:
-			if usd, ok := prices.Cost(r.Model, r.EstInput, r.EstOutput, r.EstCacheRead, r.EstCacheWrite, r.EstReasoning); ok {
-				sl.Cost += usd
-				priced = true
-			}
+		pctx := priceCtx{
+			model: r.Model, hasRawCost: r.HasRawCost, rawCost: r.RawCost,
+			estEvents: r.EstEvents, estInput: r.EstInput, estOutput: r.EstOutput,
+			estCacheRead: r.EstCacheRead, estCacheWrite: r.EstCacheWrite, estReasoning: r.EstReasoning,
 		}
+		costDelta, priced, up := priceRow(pctx, prices)
+		sl.Cost += costDelta
 		if !priced {
 			sl.UnpricedEvents += r.EstEvents
-			unpriced[r.Model] = true
+			for _, m := range up {
+				unpriced[m] = true
+			}
 		}
 	}
 
@@ -491,12 +511,15 @@ func Statusline(st *store.Store, prices *pricing.Table) (string, error) {
 	var totalTok int64
 	var totalCost float64
 	var totalEvents int64
-	toolCount := 0
+	toolCount, unpricedCount := 0, 0
 	for _, l := range lines {
 		totalTok += l.Total
 		totalCost += l.Cost
 		totalEvents += l.Events
 		toolCount++
+		if l.UnpricedEvents > 0 {
+			unpricedCount++
+		}
 	}
 
 	if toolCount == 0 {
@@ -504,11 +527,8 @@ func Statusline(st *store.Store, prices *pricing.Table) (string, error) {
 	}
 
 	unpriced := ""
-	for _, l := range lines {
-		if l.UnpricedEvents > 0 {
-			unpriced = "*"
-			break
-		}
+	if unpricedCount > 0 {
+		unpriced = "*"
 	}
 
 	return fmt.Sprintf("%s%s  ·  %d tools  ·  %s tok  ·  %d events",

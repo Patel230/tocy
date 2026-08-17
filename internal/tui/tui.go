@@ -87,6 +87,12 @@ type Model struct {
 	spinToken int
 	scanNote  string
 	lastErr   string
+	// loadSeq is incremented in the Bubble Tea message handler to give every
+	// async load a monotonically increasing version.  The seq field on
+	// loadDataMsg is compared against the current loadSeq so stale data
+	// from a previous load never overwrites fresh data.  It is safe to read
+	// and increment without a mutex because all mutations happen through the
+	// single Bubble Tea update loop.
 	loadSeq   int
 	data      *viewData
 }
@@ -353,8 +359,9 @@ func buildInsights(vd *viewData) string {
 	parts := []string{}
 
 	var topTool string
-	var topTotal int64
+	var topTotal, totalAll int64
 	for _, l := range vd.byTool {
+		totalAll += l.Total
 		if l.Total > topTotal {
 			topTotal = l.Total
 			topTool = l.Key
@@ -364,10 +371,6 @@ func buildInsights(vd *viewData) string {
 		parts = append(parts, fmt.Sprintf("top %s (%s)", topTool, report.Humanize(topTotal)))
 	}
 	if len(vd.byTool) > 1 && topTotal > 0 {
-		totalAll := int64(0)
-		for _, l := range vd.byTool {
-			totalAll += l.Total
-		}
 		parts = append(parts, fmt.Sprintf("%.0f%% from %s", float64(topTotal)/float64(totalAll)*100, topTool))
 	}
 	if vd.cards[1].cost > 0 {
@@ -431,7 +434,9 @@ func (m Model) View() string {
 		if i == m.tab {
 			tabs = append(tabs, tabOnSty.Foreground(palette[i%len(palette)]).Render(lbl))
 		} else {
-			tabs = append(tabs, tabOffSty.Render(lbl))
+			c := palette[i%len(palette)]
+			off := lipgloss.NewStyle().Foreground(lipgloss.Color(c)).Faint(true).Padding(0, 2)
+			tabs = append(tabs, off.Render(lbl))
 		}
 	}
 	tabBar := lipgloss.JoinHorizontal(lipgloss.Top, tabs...)
@@ -449,7 +454,7 @@ func (m Model) View() string {
 	case m.lastErr != "":
 		lines = []string{warnSty.Render("error: " + m.lastErr)}
 		if m.data != nil && m.data.insights != "" {
-			lines = append(lines, "", secSty.Render(m.data.insights))
+			lines = append(lines, "", m.tabHeaderStyle().Render(m.data.insights))
 		}
 	case m.data == nil:
 		lines = []string{"  " + infoSty.Render(spinnerFrame(m.spinFrame)+" loading data...")}
@@ -554,11 +559,7 @@ func (m Model) body(w int) []string {
 	case 1:
 		return m.list(d.byModel, w, func(l report.Line) string { return l.Key }, true)
 	case 2:
-		rev := make([]report.Line, len(d.byDay))
-		for i, l := range d.byDay {
-			rev[len(d.byDay)-1-i] = l
-		}
-		return m.list(rev, w, func(l report.Line) string { return l.Key }, false)
+		return m.listRev(d.byDay, w, func(l report.Line) string { return l.Key })
 	case 3:
 		return m.list(d.byProject, w, func(l report.Line) string { return report.ShortProj(l.Key) }, true)
 	default:
@@ -585,6 +586,25 @@ func (m Model) list(src []report.Line, w int, label func(report.Line) string, so
 		out = append([]string{dimSty.Render("sorted by " + mode + " (s to toggle)"), ""}, out...)
 	}
 	return out
+}
+
+// listRev renders src in reverse chronological order without copying the
+// slice.  The daily tab shows newest-first; sorting by cost is not offered
+// because the x-axis is time.
+func (m Model) listRev(src []report.Line, w int, label func(report.Line) string) []string {
+	lines := make([]report.Line, len(src))
+	for i := range src {
+		lines[i] = src[len(src)-1-i]
+	}
+	return barList(lines, w, label)
+}
+
+func (m Model) tabColor() lipgloss.Color {
+	return palette[m.tab%len(palette)]
+}
+
+func (m Model) tabHeaderStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Bold(true).Foreground(m.tabColor())
 }
 
 func (m Model) overview(w int) []string {

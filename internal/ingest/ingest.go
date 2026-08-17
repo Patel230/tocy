@@ -86,7 +86,11 @@ func scanSource(st *store.Store, src source.Source) (files, newEvents int, detai
 
 		prev, gerr := st.GetFileState(path)
 		if gerr != nil {
-			return files, newEvents, details, gerr
+			// Transient DB errors on a single file should not abort the
+			// entire source scan — continue past it.
+			fileErrs = append(fileErrs, fmt.Errorf("%s: %w", path, gerr))
+			details = append(details, FileDetail{Path: path, Err: gerr})
+			continue
 		}
 		if prev == nil {
 			prev = &source.FileState{Path: path, Source: src.Name()}
@@ -109,12 +113,16 @@ func scanSource(st *store.Store, src source.Source) (files, newEvents int, detai
 		}
 		n, ierr := st.InsertEvents(batch)
 		if ierr != nil {
-			return files, newEvents, details, ierr
+			fileErrs = append(fileErrs, fmt.Errorf("%s: %w", path, ierr))
+			details = append(details, FileDetail{Path: path, Err: ierr})
+			continue
 		}
 		ns.Path, ns.Source = path, src.Name()
 		ns.Size, ns.Mtime, ns.Inode = size, mtime, ino
 		if serr := st.SaveFileState(ns); serr != nil {
-			return files, newEvents, details, serr
+			fileErrs = append(fileErrs, fmt.Errorf("%s: %w", path, serr))
+			details = append(details, FileDetail{Path: path, Err: serr})
+			continue
 		}
 		files++
 		newEvents += n
