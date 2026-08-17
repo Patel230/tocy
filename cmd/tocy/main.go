@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lakshmanpatel/tocy/internal/config"
 	"github.com/lakshmanpatel/tocy/internal/ingest"
 	"github.com/lakshmanpatel/tocy/internal/pricing"
 	"github.com/lakshmanpatel/tocy/internal/report"
@@ -346,6 +347,13 @@ func cmdReport(args []string) error {
 	tool := fs.String("tool", "", "filter to one tool, e.g. claude-code")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	c := config.Load("")
+	if *since == "all" && c.DefaultRange != "all" {
+		*since = c.DefaultRange
+	}
+	if *by == "tool" && c.DefaultGroup != "tool" {
+		*by = c.DefaultGroup
 	}
 	now := time.Now()
 	sinceT, err := report.ParseSince(*since, now)
