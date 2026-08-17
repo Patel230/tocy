@@ -88,6 +88,8 @@ func main() {
 		err = cmdTools()
 	case "compare":
 		err = cmdCompare(args)
+	case "efficiency":
+		err = cmdEfficiency(args)
 	case "statusline":
 		err = cmdStatusline(args)
 	case "watch":
@@ -309,6 +311,21 @@ func cmdHelp(args []string) error {
 		fmt.Println("      " + color(ansiDim, "--tool <name>                            filter to one tool"))
 	case "tools":
 		fmt.Println(color(ansiBold+ansiPurple, "tocy tools") + " — " + color(ansiDim, "list detected tools and ingest status"))
+	case "compare":
+		fmt.Println(color(ansiBold+ansiPurple, "tocy compare") + " — " + color(ansiDim, "compare two time periods"))
+		fmt.Println()
+		fmt.Println("  " + color(ansiBold, "tocy compare") + " " + color(ansiDim, "[flags]"))
+		fmt.Println("      " + color(ansiDim, "--since 7d|14d|30d                    (default 7d)"))
+		fmt.Println("      " + color(ansiDim, "--prev  14d|30d|60d                  (default 14d)"))
+		fmt.Println("      " + color(ansiDim, "--by tool|model|day|project            (default tool)"))
+	case "efficiency":
+		fmt.Println(color(ansiBold+ansiPurple, "tocy efficiency") + " — " + color(ansiDim, "show token efficiency metrics"))
+		fmt.Println()
+		fmt.Println("  " + color(ansiBold, "tocy efficiency") + " " + color(ansiDim, "[flags]"))
+		fmt.Println("      " + color(ansiDim, "--since 7d|14d|30d|all                 (default 7d)"))
+		fmt.Println("      " + color(ansiDim, "--by tool|model|day|project             (default tool)"))
+		fmt.Println()
+		fmt.Println("      outputs: cost/MTok, cache hit rate, total tokens")
 	case "statusline":
 		fmt.Println(color(ansiBold+ansiPurple, "tocy statusline") + " — " + color(ansiDim, "compact one-line cost summary for today"))
 		fmt.Println()
@@ -425,6 +442,38 @@ func cmdTools() error {
 func cmdDashboard() error {
 	return runWithStore(func(st *store.Store) error {
 		return tui.Run(st, pricing.Load(false))
+	})
+}
+
+func cmdEfficiency(args []string) error {
+	fs := flag.NewFlagSet("efficiency", flag.ExitOnError)
+	since := fs.String("since", "7d", "time window")
+	by := fs.String("by", "tool", "group by: tool|model|day|project")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	now := time.Now()
+	sinceT, err := report.ParseSince(*since, now)
+	if err != nil {
+		return err
+	}
+	return runWithStore(func(st *store.Store) error {
+		lines, _, err := report.Build(st, report.Options{Since: sinceT, GroupBy: *by}, pricing.Load(false))
+		if err != nil {
+			return err
+		}
+		em := report.ComputeEfficiency(lines, pricing.Load(false))
+		fmt.Printf("Period: %s\n", *since)
+		fmt.Printf("Total tokens: %s\n", report.Humanize(em.TotalTokens))
+		fmt.Printf("Total cost:   %s\n", report.Money(em.TotalCost))
+		fmt.Printf("Cost/MTok:    $%.4f\n", em.CostPerMTokens)
+		fmt.Printf("Cache hit:    %.1f%%\n", em.CacheHitRate*100)
+		if em.CacheHitRate > 0.1 {
+			fmt.Println(color(ansiGreen, "  cache is saving you money"))
+		} else if em.CacheHitRate > 0 {
+			fmt.Println(color(ansiDim, "  low cache usage — consider longer context caching"))
+		}
+		return nil
 	})
 }
 
