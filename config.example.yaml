@@ -1,0 +1,19 @@
+# tocy configuration file
+# See: https://github.com/Patel230/tocy
+
+# Default time range for reports (7d, 14d, 30d, all)
+default_range = "7d"
+
+# Default group-by for reports (tool, model, day, project)
+default_group = "tool"
+
+# Budget thresholds
+daily_budget = 5.0
+weekly_budget = 25.0
+monthly_budget = 100.0
+
+# Alert threshold (percentage of budget before warning)
+alert_threshold = 0.8
+
+# Enable desktop notifications (macOS only)
+notifications = false
