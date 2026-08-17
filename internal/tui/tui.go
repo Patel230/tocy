@@ -57,6 +57,7 @@ type viewData struct {
 	loadingCost  float64
 	pricingLabel string
 	loadedAt     time.Time
+	since        time.Time
 	err          error
 }
 
@@ -160,7 +161,7 @@ func (m Model) loadCmd() tea.Cmd {
 
 func load(st *store.Store, prices *pricing.Table, since time.Time, tool string) (*viewData, error) {
 	now := time.Now()
-	vd := &viewData{loadedAt: now, pricingLabel: pricingSourceLabel(prices)}
+	vd := &viewData{loadedAt: now, pricingLabel: pricingSourceLabel(prices), since: since}
 	build := func(by string, s time.Time) ([]report.Line, []string, error) {
 		return report.Build(st, report.Options{Since: s, GroupBy: by, Source: tool}, prices)
 	}
@@ -621,7 +622,7 @@ func (m Model) overview(w int) []string {
 		// Skip the muted sequential palette entries and use vivid,
 		// visually-distinct colors for the summary cards.
 		pi := map[int]int{0: 7, 1: 6, 2: 9}[i]
-		cards = append(cards, cardAt(t, d.cards[i].total, d.cards[i].cost, d.cards[i].unpriced, pi, cardW))
+		cards = append(cards, cardAtProjected(t, d.cards[i].total, d.cards[i].cost, d.cards[i].unpriced, pi, cardW, d.since))
 	}
 	row := lipgloss.JoinHorizontal(lipgloss.Top, cards...)
 	out := strings.Split(row, "\n")

@@ -82,7 +82,7 @@ func main() {
 	case "tools":
 		err = cmdTools()
 	case "statusline":
-		err = cmdStatusline()
+		err = cmdStatusline(args)
 	case "watch":
 		err = cmdWatch(args)
 	case "prune":
@@ -218,9 +218,19 @@ func cmdSessions(args []string) error {
 	return report.RenderSessions(os.Stdout, sessions, report.Options{JSON: *jsonOut}, unpriced)
 }
 
-func cmdStatusline() error {
+func cmdStatusline(args []string) error {
+	fs := flag.NewFlagSet("statusline", flag.ExitOnError)
+	since := fs.String("since", "today", "time window")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	now := time.Now()
+	sinceT, err := report.ParseSince(*since, now)
+	if err != nil {
+		return err
+	}
 	return runWithStore(func(st *store.Store) error {
-		line, err := report.Statusline(st, pricing.Load(false))
+		line, err := report.Statusline(st, pricing.Load(false), sinceT)
 		if err != nil {
 			return err
 		}
@@ -280,6 +290,7 @@ func cmdHelp(args []string) error {
 		fmt.Println("      " + color(ansiDim, "--until 7d|2w|1m|YYYY-MM-DD                end of window (exclusive)"))
 		fmt.Println("      " + color(ansiDim, "--by tool|model|day|project|session      (default tool)"))
 		fmt.Println("      " + color(ansiDim, "--json                                   machine-readable output"))
+		fmt.Println("      " + color(ansiDim, "--csv                                    export as CSV"))
 		fmt.Println("      " + color(ansiDim, "--tool <name>                            filter to one tool"))
 	case "sessions":
 		fmt.Println(color(ansiBold+ansiPurple, "tocy sessions") + " — " + color(ansiDim, "list recent sessions with cost"))
@@ -325,6 +336,7 @@ func cmdReport(args []string) error {
 	until := fs.String("until", "", "end of time window (exclusive)")
 	by := fs.String("by", "tool", "group by: tool|model|day|project")
 	jsonOut := fs.Bool("json", false, "JSON output")
+	exportCSV := fs.Bool("csv", false, "export as CSV")
 	tool := fs.String("tool", "", "filter to one tool, e.g. claude-code")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -343,6 +355,9 @@ func cmdReport(args []string) error {
 		lines, unpriced, err := report.Build(st, o, pricing.Load(false))
 		if err != nil {
 			return err
+		}
+		if *exportCSV {
+			return report.ExportCSV(os.Stdout, lines)
 		}
 		return report.Render(os.Stdout, lines, o, unpriced)
 	})

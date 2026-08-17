@@ -210,6 +210,43 @@ func cardAt(title string, total int64, cost float64, unpriced bool, paletteIdx i
 	return sty.Render(body)
 }
 
+// cardAtProjected appends a monthly projection and budget warning to the card.
+func cardAtProjected(title string, total int64, cost float64, unpriced bool, paletteIdx int, width int, since time.Time) string {
+	c := report.Money(cost)
+	warn := ""
+	if unpriced {
+		c += "*"
+	}
+	if proj, _ := report.Projection(cost, since); proj != report.Money(cost) {
+		warn = proj
+	}
+	if budget, exceeded := report.BudgetWarn(cost, since); exceeded {
+		warn += " " + budget
+	}
+	bc := palette[paletteIdx%len(palette)]
+	sty := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(bc).
+		Padding(0, 1).
+		Width(width)
+	valSty := lipgloss.NewStyle().Bold(true).Foreground(bc)
+	costVal := lipgloss.NewStyle().Bold(true).Foreground(palette[(paletteIdx+3)%len(palette)]).Render(c)
+	var body string
+	if warn != "" {
+		body = fmt.Sprintf("%s\n%s\n%s\n%s",
+			dimSty.Render(title),
+			valSty.Render(report.Humanize(total)+" tok"),
+			costVal,
+			dimSty.Render(warn))
+	} else {
+		body = fmt.Sprintf("%s\n%s\n%s",
+			dimSty.Render(title),
+			valSty.Render(report.Humanize(total)+" tok"),
+			costVal)
+	}
+	return sty.Render(body)
+}
+
 func spinnerFrame(n int) string {
 	chars := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 	return chars[n%len(chars)]

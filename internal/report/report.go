@@ -1,6 +1,7 @@
 package report
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -498,12 +499,14 @@ func RenderSessions(w io.Writer, sessions []SessionLine, o Options, unpriced []s
 	return nil
 }
 
-func Statusline(st *store.Store, prices *pricing.Table) (string, error) {
+func Statusline(st *store.Store, prices *pricing.Table, since time.Time) (string, error) {
 	now := time.Now()
-	y, m, d := now.Date()
-	today := time.Date(y, m, d, 0, 0, 0, 0, now.Location())
+	if since.IsZero() {
+		y, m, d := now.Date()
+		since = time.Date(y, m, d, 0, 0, 0, 0, now.Location())
+	}
 
-	lines, _, err := Build(st, Options{Since: today, GroupBy: "tool"}, prices)
+	lines, _, err := Build(st, Options{Since: since, GroupBy: "tool"}, prices)
 	if err != nil {
 		return "", err
 	}
@@ -523,7 +526,7 @@ func Statusline(st *store.Store, prices *pricing.Table) (string, error) {
 	}
 
 	if toolCount == 0 {
-		return C(dim, "no data today"), nil
+		return C(dim, "no data"), nil
 	}
 
 	unpriced := ""
@@ -543,4 +546,69 @@ func trimZero(s string) string {
 	}
 	num, unit := s[:len(s)-1], s[len(s)-1:]
 	return strings.TrimSuffix(num, ".0") + unit
+}
+
+// ExportCSV writes lines as CSV to w with headers: key, input, output, cache_read,
+// cache_write, reasoning, total, events, cost, unpriced_events.
+func ExportCSV(w io.Writer, lines []Line) error {
+	cw := csv.NewWriter(w)
+	defer cw.Flush()
+	if err := cw.Write([]string{"key", "input", "output", "cache_read", "cache_write", "reasoning", "total", "events", "cost", "unpriced_events"}); err != nil {
+		return err
+	}
+	for _, l := range lines {
+		if err := cw.Write([]string{
+			l.Key,
+			strconv.FormatInt(l.Input, 10),
+			strconv.FormatInt(l.Output, 10),
+			strconv.FormatInt(l.CacheRead, 10),
+			strconv.FormatInt(l.CacheWrite, 10),
+			strconv.FormatInt(l.Reasoning, 10),
+			strconv.FormatInt(l.Total, 10),
+			strconv.FormatInt(l.Events, 10),
+			fmt.Sprintf("%.6f", l.Cost),
+			strconv.FormatInt(l.UnpricedEvents, 10),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// BudgetWarn reports whether cost exceeds a per-period budget. The period
+// is derived from since; if since is the start of today the period is "today",
+// if it's 7 days ago it's "7d", otherwise "custom".
+func BudgetWarn(cost float64, since time.Time) (string, bool) {
+	var period string
+	now := time.Now()
+	switch {
+	case since.Equal(time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())):
+		period = "today"
+	case since.Before(now.AddDate(0, 0, -8)):
+		period = "7d"
+	default:
+		period = "custom"
+	}
+	switch period {
+	case "today":
+		return "", cost > 5.0
+	case "7d":
+		return "", cost > 25.0
+	default:
+		return "", false
+	}
+}
+
+// Projection estimates monthly spend from the current window. If since is
+// unset (all-time) it returns the total as-is.
+func Projection(totalCost float64, since time.Time) (string, bool) {
+	if since.IsZero() {
+		return Money(totalCost), false
+	}
+	hours := time.Since(since).Hours()
+	if hours <= 0 {
+		return Money(totalCost), false
+	}
+	monthly := totalCost / hours * 24 * 30
+	return fmt.Sprintf("~%s/mo", Money(monthly)), monthly > totalCost
 }
