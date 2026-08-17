@@ -1,6 +1,9 @@
 package report
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestShortProj(t *testing.T) {
 	if got := ShortProj("/Users/x/Desktop/ProjectAlpha/tocy"); got != ".../ProjectAlpha/tocy" {
@@ -47,5 +50,38 @@ func TestHumanize(t *testing.T) {
 		if got := Humanize(c.in); got != c.want {
 			t.Errorf("Humanize(%d) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+func TestOptimizationTip(t *testing.T) {
+	// Empty input
+	if got := OptimizationTip(nil); got != "" {
+		t.Errorf("OptimizationTip(nil) = %q, want empty", got)
+	}
+
+	// No suggestions for low-cost models with low input
+	lines := []Line{{Key: "gpt-4o-mini", Cost: 0.01, Input: 100}}
+	if got := OptimizationTip(lines); got != "" {
+		t.Errorf("OptimizationTip(low usage) = %q, want empty", got)
+	}
+
+	// Suggestion when Pro model is used
+	lines = []Line{{Key: "claude-sonnet-4-20250514-Pro", Cost: 5.0, Input: 5000}}
+	got := OptimizationTip(lines)
+	if got == "" {
+		t.Error("OptimizationTip(Pro model) = empty, want suggestion")
+	}
+	if !strings.Contains(got, "Haiku") {
+		t.Errorf("OptimizationTip(Pro model) = %q, want Haiku suggestion", got)
+	}
+
+	// High input volume warning
+	lines = []Line{{Key: "claude-sonnet-4-20250514", Cost: 10.0, Input: 10_000_001}}
+	got = OptimizationTip(lines)
+	if got == "" {
+		t.Error("OptimizationTip(high input) = empty, want batching suggestion")
+	}
+	if !strings.Contains(got, "batch") {
+		t.Errorf("OptimizationTip(high input) = %q, want batch suggestion", got)
 	}
 }

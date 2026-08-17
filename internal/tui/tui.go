@@ -390,6 +390,9 @@ func buildInsights(vd *viewData) string {
 	if em.TotalTokens > 0 && em.CacheHitRate > 0.01 {
 		parts = append(parts, fmt.Sprintf("cache %.0f%%", em.CacheHitRate*100))
 	}
+	if tip := report.OptimizationTip(vd.byTool); tip != "" {
+		parts = append(parts, tip)
+	}
 	if len(parts) == 0 {
 		return ""
 	}
@@ -532,7 +535,7 @@ KEYBINDINGS
  q / esc      Quit
 
 TABS
- Overview     Summary cards, tool breakdown, 30-day trend
+ Overview     Summary cards, tool breakdown, 30-day trend, insights
  By Model     Usage grouped by AI model
  Daily        Day-by-day usage history
  Projects     Usage grouped by project directory
@@ -540,12 +543,19 @@ TABS
 
 INSIGHTS
  Smart suggestions appear in the Overview tab based on
- your usage patterns — top tools, cost analysis, and
- unpriced model warnings.
+ your usage patterns — top tools, cost projections, budget
+ warnings, cache efficiency, and optimization tips.
 
 A dollar (*) suffix means some events in that row have no
 pricing data and were not counted toward the cost column.
 A dash (-) means the entire row is unpriced.
+
+CLI COMMANDS
+ tocy report --csv              export usage as CSV
+ tocy compare                   compare two time periods
+ tocy efficiency                show cost/token and cache metrics
+ tocy sessions                  list sessions with cost
+ tocy statusline                compact one-line cost summary
 `
 
 	box := lipgloss.NewStyle().

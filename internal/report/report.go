@@ -686,11 +686,56 @@ func ComputeEfficiency(lines []Line, prices *pricing.Table) *EfficiencyMetrics {
 	if em.TotalTokens > 0 {
 		em.CacheHitRate = float64(totalCacheRead) / float64(em.TotalTokens)
 	}
-	
+
 	// Estimate cost per million tokens
 	if em.TotalTokens > 0 {
 		em.CostPerMTokens = em.TotalCost / float64(em.TotalTokens) * 1e6
 	}
-	
+
 	return em
+}
+
+// OptimizationTip suggests cheaper alternatives based on usage patterns.
+func OptimizationTip(lines []Line) string {
+	if len(lines) == 0 {
+		return ""
+	}
+
+	// Find most expensive model
+	modelCost := make(map[string]float64)
+	for _, l := range lines {
+		modelCost[l.Key] += l.Cost
+	}
+
+	var topModel string
+	var topCost float64
+	for m, c := range modelCost {
+		if c > topCost {
+			topCost = c
+			topModel = m
+		}
+	}
+
+	var suggestions []string
+
+	// Suggest cheaper model alternatives
+	if strings.Contains(topModel, "Pro") || strings.Contains(topModel, "Opus") {
+		suggestions = append(suggestions, fmt.Sprintf("consider %s for simpler tasks", strings.ReplaceAll(topModel, "Pro", "Haiku")))
+	}
+
+	totalInput := int64(0)
+	for _, l := range lines {
+		totalInput += l.Input
+	}
+
+	// High input volume warning
+	if totalInput > 10_000_000 {
+		suggestions = append(suggestions, "batch requests or use smaller context windows")
+	}
+
+	if len(suggestions) == 0 {
+		return ""
+	}
+
+	return "💡 " + strings.Join(suggestions, "; ")
 }
